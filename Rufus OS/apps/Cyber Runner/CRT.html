@@ -1,0 +1,3205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CyberRunner v5.2.1</title>
+    <style>
+        /* --- Root Variables for Theming --- */
+        :root {
+            --primary-color: #00ffff;
+            --danger-color: #ff4136;
+            --warning-color: #f1c40f;
+            --background-color: #000;
+            --text-color: #e0e0e0;
+            --dark-grey: #2d3436;
+            --light-grey: #485460;
+            --elite-color: #f39c12;
+            --bounty-color: #e84393;
+            --player-color: #0074D9;
+            --ice-color: #ff00ff;
+            --construction-color: #ff9f43;
+            --corporate-color: #ecf0f1;
+            --success-color: #2ecc71;
+            --deep-blue: #1e253a;
+            --construction-yellow: #ff9f43;
+            --casino-green: #00ff41;
+            --casino-green-dark: #002a0a;
+            --casino-green-glow: rgba(0, 255, 65, 0.2);
+        }
+
+        /* --- Base Styles --- */
+        html, body {
+            margin: 0;
+            padding: 0;
+            background-color: var(--background-color);
+            color: var(--text-color);
+            font-family: 'Courier New', Courier, monospace;
+            overflow: hidden;
+            width: 100%;
+            height: 100%;
+        }
+
+        /* --- Game Canvases --- */
+        .canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+            position: absolute;
+            top: 0;
+            left: 0;
+            background-color: transparent;
+            image-rendering: pixelated; /* Ensures crisp pixel art */
+        }
+        #introCanvas { z-index: 200; background-color: #080810; position: fixed; }
+        #gameCanvas { z-index: 1; display: block; background-color: var(--background-color); }
+
+        /* --- Intro & Start Screens --- */
+        #intro-overlay {
+            position: fixed;
+            top: 0; left: 0; width: 100%; height: 100%;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            background-color: rgba(0, 0, 0, 0.7);
+            z-index: 210;
+            cursor: pointer;
+        }
+        #startButton, #startGameButton, #skipIntroButton, #startNoDebtButton, #loadGameButton {
+            padding: 15px 30px;
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 20px;
+            color: #00ffcc;
+            background: #111;
+            border: 2px solid #00ffcc;
+            border-radius: 8px;
+            text-shadow: 0 0 10px #00ffcc;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            margin: 10px;
+        }
+        #startButton:hover, #startGameButton:hover, #skipIntroButton:hover, #startNoDebtButton:hover, #loadGameButton:hover {
+            background: #00ffcc;
+            color: #111;
+            box-shadow: 0 0 20px #00ffcc;
+        }
+        #skipIntroButton { border-color: var(--warning-color); color: var(--warning-color); }
+        #skipIntroButton:hover { background: var(--warning-color); color: #111; box-shadow: 0 0 20px var(--warning-color); }
+        #startNoDebtButton { border-color: var(--success-color); color: var(--success-color); }
+        #startNoDebtButton:hover { background: var(--success-color); color: #111; box-shadow: 0 0 20px var(--success-color); }
+        #loadCodeInput {
+            margin-top: 20px;
+            padding: 10px;
+            width: 80%;
+            max-width: 400px;
+            background: #222;
+            border: 1px solid var(--primary-color);
+            color: var(--primary-color);
+            font-family: 'Courier New', Courier, monospace;
+            text-align: center;
+        }
+        
+        #game-start-container {
+            display: none;
+            position: fixed;
+            bottom: 10%;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 220;
+            pointer-events: auto;
+        }
+
+        /* --- Terminal Jack-in Animation --- */
+        #terminal-animation-container {
+            position: fixed;
+            top: 0; left: 0; width: 100%; height: 100%;
+            z-index: 300;
+            display: none;
+            background-color: #000;
+        }
+        #matrix-canvas { z-index: 301; }
+        #text-overlay {
+            position: absolute;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            z-index: 302;
+            font-size: 1.5em;
+            text-shadow: 0 0 8px #00ff41, 0 0 15px #00ff41;
+            opacity: 0;
+            transition: opacity 1s ease-in-out;
+            text-align: left;
+            width: 80%;
+            max-width: 800px;
+            color: #00ff41;
+        }
+        #log-container { display: flex; flex-direction: column; justify-content: center; height: 100%; }
+        .log-line { margin-bottom: 0.5em; }
+        .cursor {
+            display: inline-block;
+            width: 1ch;
+            height: 1.2em;
+            background-color: #00ff41;
+            animation: blink 1s step-end infinite;
+            box-shadow: 0 0 10px #00ff41;
+            vertical-align: bottom;
+        }
+        @keyframes blink {
+            from, to { background-color: transparent }
+            50% { background-color: #00ff41; }
+        }
+
+        /* --- Main Game UI (HUD) --- */
+        #ui-overlay {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            pointer-events: none;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            padding: 15px;
+            padding-top: 70px; /* Space for top controls */
+            box-sizing: border-box;
+            z-index: 10;
+        }
+        .hud { display: flex; justify-content: space-between; align-items: flex-start; text-shadow: 2px 2px 2px #000; color: #fff; }
+        .hud-left { width: 40%; max-width: 350px; }
+        .hud-right { text-align: right; font-size: 1.5em; line-height: 1.4; }
+        .stat-bar-container { margin-bottom: 10px; }
+        .stat-bar-label { font-size: 1.1em; margin-bottom: 4px; display: flex; justify-content: space-between; }
+        #weapon-display { font-size: 0.8em; color: var(--warning-color); }
+        .stat-bar { width: 100%; height: 20px; background-color: var(--dark-grey); border: 1px solid var(--light-grey); padding: 2px; box-sizing: border-box; }
+        .stat-bar-inner { height: 100%; transition: width 0.3s ease-out; }
+        #health-bar-inner { background-color: var(--danger-color); }
+        #xp-bar-inner { background-color: var(--primary-color); }
+        #quest-display { position: absolute; bottom: 40px; left: 50%; transform: translateX(-50%); background-color: rgba(0,0,0,0.7); padding: 5px 10px; border: 1px solid var(--warning-color); color: var(--warning-color); text-align: center; max-width: 70%; font-size: 0.9em; display: none; }
+        #controls-display { text-shadow: 2px 2px 2px #000; color: #fff; font-size: 0.9em; text-align: center; width: 100%; }
+        .message-box { position: absolute; bottom: 20%; left: 50%; transform: translateX(-50%); background-color: rgba(0, 0, 0, 0.85); color: #00ff00; border: 2px solid #00ff00; padding: 15px 25px; border-radius: 5px; text-align: center; opacity: 0; transition: opacity 0.5s; box-shadow: 0 0 10px #00ff00; z-index: 100; max-width: 80%; }
+        
+        /* --- Game Over Screen --- */
+        #game-over-screen { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.9); color: var(--danger-color); display: none; flex-direction: column; justify-content: center; align-items: center; text-align: center; z-index: 50; pointer-events: auto; }
+        #game-over-screen h1 { font-size: 4em; text-shadow: 3px 3px 0 #000; margin: 0; }
+        #game-over-screen p { color: var(--text-color); font-size: 1.2em; margin: 20px 0; }
+        #continue-button { background-color: var(--primary-color); color: black; border: none; padding: 15px 30px; font-family: 'Courier New', Courier, monospace; font-size: 1.5em; cursor: pointer; }
+        #continue-button:disabled { background-color: var(--dark-grey); color: var(--light-grey); cursor: not-allowed; }
+        .restart-message { display: none; color: var(--warning-color); margin-top: 20px; }
+        
+        /* --- Vendor UI --- */
+        .vendor-ui { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background-color: rgba(20,20,20,0.98); border: 2px solid var(--warning-color); padding: 0; text-align: center; display: none; pointer-events: auto; width: 450px; z-index: 20; }
+        .vendor-tabs { display: flex; border-bottom: 2px solid var(--warning-color); }
+        .vendor-tab { flex: 1; padding: 10px; cursor: pointer; background: var(--dark-grey); color: var(--light-grey); }
+        .vendor-tab.active { background: var(--warning-color); color: black; }
+        .vendor-content { padding: 20px; }
+        .vendor-item-list { max-height: 300px; overflow-y: auto; text-align: left; }
+        .vendor-item-list-pane { display: none; }
+        .vendor-item-list-pane.active { display: block; }
+        .vendor-item { background-color: var(--dark-grey); border: 1px solid var(--light-grey); padding: 10px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; }
+        .vendor-item-info h3 { margin: 0 0 5px 0; color: var(--primary-color); }
+        .vendor-item-info p { margin: 0; font-size: 0.8em; }
+        .vendor-buy-button { background-color: var(--warning-color); border: 2px solid #d35400; color: black; padding: 10px 15px; font-family: 'Courier New', Courier, monospace; cursor: pointer; flex-shrink: 0; margin-left: 15px; }
+        .vendor-buy-button:hover { background-color: #ffc300; }
+        .vendor-buy-button:disabled { background-color: #555; color: #999; border-color: #333; cursor: not-allowed; }
+        .vendor-close-button { background-color: var(--light-grey); border: 1px solid var(--dark-grey); color: white; padding: 10px 15px; font-family: 'Courier New', Courier, monospace; cursor: pointer; display: block; width: 100%; margin-top: 20px; }
+        
+        /* --- Top Right Controls (Audio, Fullscreen) --- */
+        #top-right-controls { position: absolute; top: 15px; right: 15px; z-index: 15; pointer-events: none; display: flex; gap: 10px; align-items: flex-start; }
+        #fullscreen-btn { position: static; background: rgba(0,0,0,0.5); border: 1px solid var(--primary-color); color: var(--primary-color); cursor: pointer; pointer-events: auto; width: 40px; height: 40px; padding: 4px; border-radius: 5px; display: flex; justify-content: center; align-items: center; transition: background-color 0.2s; }
+        #audio-controls-wrapper { position: relative; pointer-events: auto; }
+        #mute-btn { position: relative; background: rgba(0,0,0,0.5); border: 1px solid var(--primary-color); color: var(--primary-color); cursor: pointer; width: 40px; height: 40px; padding: 4px; border-radius: 5px; display: flex; justify-content: center; align-items: center; transition: background-color 0.2s; }
+        #extended-audio-controls { visibility: hidden; opacity: 0; position: absolute; top: 100%; right: 0; margin-top: 5px; padding: 10px; background: rgba(45, 52, 54, 0.9); border: 1px solid var(--primary-color); border-radius: 5px; display: flex; flex-direction: column; align-items: center; gap: 8px; transition: opacity 0.2s, visibility 0.2s; }
+        #audio-controls-wrapper:hover #extended-audio-controls { visibility: visible; opacity: 1; }
+        #fullscreen-btn svg, #mute-btn svg, #next-track-btn svg { stroke: var(--primary-color); transition: stroke 0.2s; }
+        #fullscreen-btn:hover, #mute-btn:hover, #next-track-btn:hover { background-color: var(--primary-color); }
+        #fullscreen-btn:hover svg, #mute-btn:hover svg, #next-track-btn:hover svg { stroke: black; }
+        #next-track-btn { background: transparent; border: 1px solid var(--primary-color); color: var(--primary-color); width: 32px; height: 32px; padding: 4px; border-radius: 5px; display: flex; justify-content: center; align-items: center; cursor: pointer; }
+        #volume-slider { -webkit-appearance: none; appearance: none; width: 100px; height: 8px; background: var(--dark-grey); outline: none; border-radius: 4px; cursor: pointer; }
+        #volume-slider::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 16px; height: 16px; background: var(--primary-color); cursor: pointer; border-radius: 50%; }
+        #volume-slider::-moz-range-thumb { width: 16px; height: 16px; background: var(--primary-color); cursor: pointer; border-radius: 50%; border: none; }
+
+        /* --- Dialogue UI --- */
+        #dialog-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); z-index: 39; display: none; pointer-events: auto; }
+        #dialog-box { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: transparent; border: none; display: none; flex-direction: row; padding: 5vw; box-sizing: border-box; z-index: 40; pointer-events: auto; align-items: center; }
+        #dialog-portrait { width: 40vw; height: 80vh; background: #000; border: 1px solid var(--primary-color); flex-shrink: 0; }
+        #dialog-main-content { flex: 1; padding-left: 5vw; display: flex; flex-direction: column; overflow: hidden; height: 80vh; }
+        #dialog-speaker { color: var(--warning-color); font-size: 2em; margin-bottom: 20px; }
+        #dialog-text { flex-grow: 1; font-size: 1.5em; line-height: 1.6; color: var(--text-color); overflow-y: auto; }
+        #dialog-prompt { text-align: right; font-size: 1em; color: var(--warning-color); animation: blink 1.5s infinite; }
+        #dialog-options { display: flex; flex-direction: column; gap: 10px; margin-top: 20px; }
+        .dialog-option-button { background: var(--dark-grey); border: 1px solid var(--primary-color); color: var(--primary-color); padding: 10px; text-align: left; cursor: pointer; width: 100%; transition: all 0.2s ease; font-size: 1.2em; }
+        .dialog-option-button:hover, .dialog-option-button.selected { background: var(--primary-color); color: black; box-shadow: 0 0 10px var(--primary-color); }
+        
+        /* --- Battle UI --- */
+        #rpg-battle-container { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: #050505; display: none; flex-direction: column; pointer-events: auto; z-index: 30; }
+        #battle-scene { flex-grow: 1; position: relative; display: flex; justify-content: space-around; align-items: center;}
+        .battle-entity { position: static; transform: none; width: 200px; text-align: center; }
+        #battle-player-sprite, #battle-ice-sprite { width: 200px; height: 200px; image-rendering: pixelated; }
+        .battle-entity-name { font-size: 1.2em; text-shadow: 0 0 5px; }
+        #battle-player .battle-entity-name { color: var(--player-color); }
+        #battle-ice .battle-entity-name { color: var(--ice-color); }
+        .battle-health-bar-container { height: 20px; background: var(--dark-grey); border: 1px solid var(--light-grey); padding: 2px; margin-top: 10px; }
+        .battle-health-bar { height: 100%; width: 100%; transition: width 0.5s ease-out; }
+        #battle-player-health { background: var(--player-color); }
+        #battle-ice-health { background: var(--ice-color); }
+        #battle-log-container { height: 80px; background: rgba(0,0,0,0.5); border-top: 1px solid var(--primary-color); border-bottom: 1px solid var(--primary-color); padding: 10px; box-sizing: border-box; color: var(--primary-color); font-style: italic; }
+        #battle-log-text::after { content: '_'; animation: blink 1s infinite; }
+        #battle-actions-container { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 20px; }
+        #battle-actions-container button { background-color: #001f3f; border: 1px solid var(--player-color); color: var(--player-color); padding: 15px; font-family: 'Courier New', Courier, monospace; cursor: pointer; font-size: 1.1em; transition: all 0.2s; }
+        #battle-actions-container button:hover:not(:disabled) { background-color: var(--player-color); color: black; box-shadow: 0 0 10px var(--player-color); }
+        #battle-actions-container button:disabled { background-color: #333; color: #888; border-color: #555; cursor: not-allowed; }
+        
+        /* --- Status Menu & Save/Load Modal --- */
+        #status-menu-overlay, #save-code-modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0, 20, 30, 0.9); z-index: 100; display: none; justify-content: center; align-items: center; pointer-events: auto; }
+        #status-menu-panel, #save-code-box { width: 80%; max-width: 800px; background-color: rgba(10, 10, 20, 0.95); border: 2px solid var(--primary-color); box-shadow: 0 0 20px var(--primary-color); color: var(--text-color); padding: 20px; }
+        #status-menu-panel { height: 70%; display: grid; grid-template-columns: 1fr 2fr; grid-template-rows: auto 1fr auto; gap: 20px; grid-template-areas: "header header" "status quests" "footer footer"; }
+        .status-menu-header { grid-area: header; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--primary-color); padding-bottom: 10px; }
+        .status-menu-header h2 { margin: 0; color: var(--primary-color); text-shadow: 0 0 5px var(--primary-color); }
+        .status-menu-header .close-prompt { font-size: 0.9em; color: var(--warning-color); }
+        .status-section { padding: 10px; border: 1px solid var(--light-grey); overflow-y: auto; }
+        .status-section h3 { margin-top: 0; color: var(--warning-color); border-bottom: 1px solid var(--warning-color); padding-bottom: 5px; }
+        #status-section-main { grid-area: status; }
+        #quest-log-section { grid-area: quests; }
+        .status-menu-footer { grid-area: footer; text-align: right; padding-top: 10px; border-top: 1px solid var(--light-grey); }
+        #saveGameButton { background: var(--success-color); color: black; border: none; padding: 10px 20px; cursor: pointer; }
+        .status-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+        .status-grid span:first-child { font-weight: bold; color: var(--primary-color); }
+        .equipment-list, .quest-list { list-style: none; padding: 0; margin: 0; }
+        .quest-list-item { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+        .track-quest-btn { background: var(--dark-grey); border: 1px solid var(--primary-color); color: var(--primary-color); font-family: 'Courier New', Courier, monospace; cursor: pointer; margin-left: 10px; padding: 2px 6px; font-size: 0.8em; }
+        .track-quest-btn:hover { background: var(--primary-color); color: #000; }
+        .track-quest-btn.active { background: var(--warning-color); color: #000; border-color: var(--warning-color); }
+        .equipment-list li.active-weapon { color: var(--warning-color); font-weight: bold; }
+        .quest-list .quest-title { font-weight: bold; color: var(--primary-color); }
+        .quest-list .quest-objective { font-size: 0.9em; padding-left: 15px; color: #ccc; }
+        .quest-list .completed-quest .quest-title { color: var(--light-grey); text-decoration: line-through; }
+        .quest-list .completed-quest .quest-objective { color: #666; }
+        #save-code-box { text-align: center; }
+        #saveCodeTextarea { width: 95%; height: 100px; background: #111; color: var(--primary-color); border: 1px solid var(--primary-color); margin-bottom: 15px; resize: none; }
+        #copySaveCodeButton, #closeSaveModalButton { padding: 10px 20px; margin: 5px; cursor: pointer; }
+
+        /* --- Fullscreen Cutscene Containers --- */
+        #first-kill-cutscene-container, #world-intro-cutscene-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: #080810;
+            z-index: 500;
+            display: none; /* Hidden by default */
+        }
+        .scene-container {
+            width: 100%;
+            height: 100%;
+            position: relative;
+        }
+        .scene {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            opacity: 0;
+            transition: opacity 2s ease-in-out;
+            background-color: #080810;
+        }
+        .scene.active {
+            opacity: 1;
+        }
+        .cutscene-text {
+            position: absolute;
+            top: 10%;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 90%;
+            max-width: 900px;
+            font-size: 22px;
+            color: var(--text-color);
+            text-shadow: 2px 2px 4px #000;
+            z-index: 20;
+            text-align: center;
+            line-height: 1.6;
+            background: rgba(0,0,0,0.7);
+            padding: 20px;
+            border-bottom: 2px solid var(--primary-color);
+        }
+        .cutscene-prompt {
+            position: absolute;
+            bottom: 10px;
+            right: 15px;
+            font-size: 0.8em;
+            color: var(--warning-color);
+            animation: blink 1.5s infinite;
+        }
+        .narration-text {
+            font-style: italic;
+        }
+
+        /* --- First Kill Cutscene Visuals --- */
+        #first-kill-cutscene-container .scene-1 { background: linear-gradient(to top, #111, #2d3436); }
+        .fallen-silhouette {
+            position: absolute;
+            width: 200px;
+            height: 50px;
+            background-color: #000;
+            bottom: 50px;
+            left: 50%;
+            transform: translateX(-50%);
+            clip-path: polygon(10% 0, 90% 0, 100% 100%, 0% 100%);
+        }
+        .rain {
+            position: absolute;
+            left: 0; top: -100%;
+            width: 1px; height: 100%;
+            background: linear-gradient(rgba(255,255,255,0), rgba(255,255,255,0.25));
+            animation: rain-fall 1s linear infinite;
+        }
+        @keyframes rain-fall { to { transform: translateY(200%); } }
+        .rain.r1 { left: 15%; animation-delay: -0.3s; }
+        .rain.r2 { left: 45%; animation-delay: -0.9s; }
+        .rain.r3 { left: 85%; animation-delay: -0.6s; }
+        #first-kill-cutscene-container .scene-2 { background-color: #000; }
+        .glitch-effect {
+            position: absolute;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            background-image: repeating-linear-gradient(
+                var(--danger-color), var(--danger-color) 2px,
+                transparent 2px, transparent 4px
+            );
+            animation: glitch-anim 0.2s linear infinite;
+        }
+        @keyframes glitch-anim {
+            from { transform: skewX(30deg); }
+            to { transform: skewX(-30deg); }
+        }
+        .ice-text {
+            position: absolute;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 3em;
+            color: var(--danger-color);
+            text-shadow: 0 0 10px var(--danger-color);
+        }
+        #first-kill-cutscene-container .scene-3 { background: linear-gradient(45deg, #111, #333); }
+        .hand {
+            position: absolute;
+            width: 150px; height: 80px;
+            background-color: var(--dark-grey);
+            border: 2px solid var(--light-grey);
+            border-radius: 10px;
+        }
+        .hand-jake { top: 40%; left: 20%; }
+        .hand-rufus { top: 45%; right: 20%; }
+        .datajack {
+            position: absolute;
+            width: 40px; height: 40px;
+            background-color: var(--primary-color);
+            box-shadow: 0 0 10px var(--primary-color);
+            top: 43%; left: 48%;
+            border-radius: 5px;
+            border: 1px solid #fff;
+        }
+        #first-kill-cutscene-container .scene-4 { background: #111; }
+        .nuyen-chip {
+            position: absolute;
+            width: 50px; height: 30px;
+            background-color: var(--warning-color);
+            border-radius: 5px;
+            box-shadow: 0 0 10px var(--warning-color);
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+        }
+        .nuyen-chip::before {
+            content: '¥';
+            position: absolute;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            color: #000;
+            font-size: 1.2em;
+        }
+        #first-kill-cutscene-container .scene-5 { background: #000; }
+        .head-silhouette {
+            position: absolute;
+            width: 200px; height: 250px;
+            background-color: var(--dark-grey);
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            clip-path: circle(40% at 50% 40%);
+        }
+        .jack-port {
+            position: absolute;
+            top: 55%; left: 65%;
+            width: 30px; height: 30px;
+            background-color: var(--light-grey);
+            border: 2px solid var(--primary-color);
+            border-radius: 50%;
+            box-shadow: 0 0 10px var(--primary-color) inset;
+        }
+        #first-kill-cutscene-container .scene-6 { background: linear-gradient(to top, #111, #2d3436); }
+        .puddle-reflection {
+            position: absolute;
+            width: 400px; height: 100px;
+            background: var(--deep-blue);
+            bottom: 50px; left: 50%;
+            transform: translateX(-50%) skew(-20deg);
+            border-radius: 5%;
+            box-shadow: 0 0 20px 10px var(--deep-blue);
+            overflow: hidden;
+        }
+        .puddle-reflection::before {
+            content: '';
+            position: absolute;
+            width: 100%; height: 100%;
+            background: linear-gradient(var(--danger-color), var(--primary-color));
+            opacity: 0.3;
+            animation: reflection-shimmer 5s linear infinite;
+        }
+        @keyframes reflection-shimmer {
+            from { transform: translateY(-100%); }
+            to { transform: translateY(100%); }
+        }
+        #first-kill-cutscene-container .scene-7 { background: linear-gradient(to top, #000, var(--deep-blue)); }
+        #first-kill-cutscene-container .city-silhouette {
+            position: absolute;
+            width: 100%; height: 50%; bottom: 0;
+            background-image: 
+                linear-gradient(#111 20%, transparent 20%), linear-gradient(to right, #111 40%, transparent 40%),
+                linear-gradient(#111 60%, transparent 60%), linear-gradient(to right, #111 80%, transparent 80%);
+            background-size: 100px 100px;
+            opacity: 0.5;
+        }
+        #first-kill-cutscene-container .scene-8 { background: linear-gradient(to top, #000, var(--deep-blue)); }
+        .runner-pov {
+            position: absolute;
+            bottom: 0;
+            width: 100%;
+            height: 50%;
+            background: linear-gradient(to top, rgba(0,0,0,1), transparent);
+        }
+        .hand-pov {
+            position: absolute;
+            width: 120px;
+            height: 200px;
+            background-color: #222;
+            bottom: -50px;
+            clip-path: polygon(20% 0, 80% 0, 100% 100%, 0% 100%);
+        }
+        .hand-left { left: 10%; }
+        .hand-right { right: 10%; }
+        
+        /* --- World Intro Cutscene Visuals --- */
+        #world-intro-cutscene-container .scene-1 { background: linear-gradient(to bottom, var(--deep-blue), #080810); }
+        .corp-tower {
+            position: absolute;
+            bottom: 0;
+            background: linear-gradient(to top, var(--dark-grey), var(--corporate-color));
+            width: 150px;
+            transform-origin: bottom center;
+        }
+        .tower-1 { left: 5%; height: 90%; transform: perspective(300px) rotateX(20deg); background: linear-gradient(to top, #222, #aaa); }
+        .tower-2 { left: 40%; height: 100%; width: 200px; position: relative;}
+        .tower-2::after {
+            content: 'ZETA';
+            font-size: 2em;
+            color: #00ff41;
+            text-shadow: 0 0 15px #00ff41;
+            position: absolute;
+            top: 30%;
+            left: 50%;
+            transform: translateX(-50%);
+            animation: ad-flicker 3s infinite alternate;
+        }
+        .tower-3 { right: 10%; height: 85%; transform: perspective(400px) rotateX(15deg); background: linear-gradient(to top, #333, #ccc); }
+        .flying-vehicle {
+            position: absolute;
+            width: 40px; height: 10px;
+            background-color: #333;
+            animation: fly-by 10s linear infinite -5s;
+        }
+        .flying-vehicle::after {
+            content: '';
+            position: absolute;
+            right: -10px;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 10px;
+            height: 2px;
+            background: var(--danger-color);
+            box-shadow: 0 0 8px var(--danger-color);
+        }
+        .flying-vehicle.far {
+            width: 20px; height: 5px;
+            opacity: 0.6;
+            animation-duration: 15s;
+            animation-delay: -2s;
+        }
+        @keyframes fly-by {
+            from { left: -50px; top: 20%; }
+            to { left: 105%; top: 25%; }
+        }
+        .hologram-ad {
+            position: absolute;
+            left: 45%; top: 30%;
+            font-size: 2em;
+            color: var(--primary-color);
+            opacity: 0.5;
+            animation: ad-flicker 6s infinite;
+        }
+        @keyframes ad-flicker {
+            0%, 100% { opacity: 0.5; text-shadow: 0 0 5px var(--primary-color); }
+            50% { opacity: 0.4; text-shadow: 0 0 10px var(--danger-color); }
+        }
+        #world-intro-cutscene-container .scene-2 { background: linear-gradient(to bottom, #333, #111); }
+        .crane {
+            position: absolute;
+            width: 20px;
+            height: 120%;
+            background-color: var(--construction-yellow);
+            left: 20%;
+            top: -10%;
+        }
+        .crane::before {
+            content: '';
+            position: absolute;
+            width: 300px;
+            height: 15px;
+            background-color: var(--construction-yellow);
+            top: 50px;
+            left: 0;
+        }
+        .unfinished-building {
+            position: absolute;
+            bottom: 0;
+            width: 300px;
+            height: 70%;
+            background-image: repeating-linear-gradient(var(--dark-grey) 0 10px, var(--light-grey) 10px 20px);
+            right: 10%;
+        }
+        #world-intro-cutscene-container .scene-3 { background: linear-gradient(to bottom, #2b211d, #1a1010); }
+        .cz-fence {
+            position: absolute;
+            width: 100%; height: 100%;
+            background-image:
+                repeating-linear-gradient(45deg, var(--light-grey), var(--light-grey) 2px, transparent 2px, transparent 20px),
+                repeating-linear-gradient(-45deg, var(--light-grey), var(--light-grey) 2px, transparent 2px, transparent 20px);
+            opacity: 0.5;
+        }
+        .cz-warning-sign {
+            position: absolute;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            width: 150px; height: 150px;
+            background-color: var(--warning-color);
+            clip-path: polygon(50% 0%, 100% 50%, 50% 100%, 0% 50%);
+        }
+        .cz-warning-sign::before {
+            content: "!";
+            position: absolute;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 100px;
+            color: #000;
+        }
+        #world-intro-cutscene-container .scene-4 { background: linear-gradient(to bottom, #111, #222); }
+        .slum-building { position: absolute; background-color: #1a1a1a; border: 1px solid #333; }
+        .slum-1 { left: 0; bottom: 0; width: 40%; height: 60%; z-index: 2; }
+        .slum-2 { right: 0; bottom: 0; width: 50%; height: 80%; }
+        .slum-3 { left: 20%; bottom: 0; width: 60%; height: 40%; background-color: #2a2a2a; z-index: 1;}
+        .neon-sign {
+            position: absolute;
+            font-size: 30px;
+            color: var(--primary-color);
+            text-shadow: 0 0 15px var(--primary-color);
+            transform: skew(-10deg);
+            animation: neon-flicker 3s infinite alternate;
+        }
+        .sign-1 { top: 40%; left: 10%; }
+        @keyframes neon-flicker { 0%, 100% { opacity: 1; } 50% { opacity: 0.7; } }
+        #world-intro-cutscene-container .scene-5 { background: #111; }
+        .chrome-arm {
+            position: absolute;
+            width: 200px; height: 40px;
+            background: linear-gradient(var(--light-grey), var(--dark-grey));
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            border: 2px solid var(--corporate-color);
+        }
+        .spark {
+            position: absolute;
+            width: 4px; height: 4px;
+            background-color: var(--warning-color);
+            border-radius: 50%;
+            box-shadow: 0 0 10px var(--warning-color);
+            animation: spark-fly 0.5s ease-out forwards;
+        }
+        @keyframes spark-fly {
+            to { transform: translate(var(--x), var(--y)); opacity: 0; }
+        }
+        #world-intro-cutscene-container .scene-6 .deal-background {
+            position: absolute;
+            width: 100%; height: 100%;
+            background: linear-gradient(45deg, #111, #333);
+        }
+        .deal {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            background: radial-gradient(circle at 50% 50%, rgba(241, 196, 15, 0.2), transparent 70%);
+        }
+        .silhouette {
+            position: absolute;
+            width: 150px; height: 300px;
+            bottom: 0;
+            background-color: #000;
+        }
+        .silhouette-1 { left: 15%; clip-path: polygon(50% 0, 100% 20%, 80% 100%, 20% 100%); }
+        .silhouette-2 { right: 15%; clip-path: polygon(50% 0, 80% 25%, 70% 100%, 30% 100%); }
+        .datachip {
+            position: absolute;
+            width: 30px; height: 10px;
+            background-color: var(--primary-color);
+            box-shadow: 0 0 10px var(--primary-color);
+            top: 55%; left: 48%;
+        }
+        #world-intro-cutscene-container .scene-7 { background: #000; }
+        .grid-line {
+            position: absolute;
+            background-color: var(--primary-color);
+            opacity: 0.3;
+            animation: grid-pulse 5s infinite alternate;
+        }
+        .grid-line.h { width: 100%; height: 1px; }
+        .grid-line.v { width: 1px; height: 100%; }
+        .gl1 { top: 20%; } .gl2 { top: 40%; } .gl3 { top: 60%; } .gl4 { top: 80%; }
+        .gl5 { left: 25%; } .gl6 { left: 50%; } .gl7 { left: 75%; }
+        @keyframes grid-pulse { to { opacity: 0.7; box-shadow: 0 0 10px var(--primary-color); } }
+        .ice-construct {
+            position: absolute;
+            width: 100px; height: 100px;
+            border: 5px solid var(--danger-color);
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%) rotate(45deg);
+            animation: ice-rotate 10s linear infinite;
+        }
+        .ice-construct::before, .ice-construct::after {
+            content: '';
+            position: absolute;
+            border: 3px solid var(--danger-color);
+            opacity: 0.5;
+        }
+        .ice-construct::before { width: 120%; height: 120%; top: -10%; left: -10%; animation: ice-rotate 10s linear infinite reverse; }
+        .ice-construct::after { width: 80%; height: 80%; top: 10%; left: 10%; }
+        @keyframes ice-rotate { to { transform: translate(-50%, -50%) rotate(405deg); } }
+        #world-intro-cutscene-container .scene-8 { background: linear-gradient(to top, #000, #1e253a); }
+        #world-intro-cutscene-container .city-silhouette {
+            position: absolute;
+            width: 100%; height: 50%; bottom: 0;
+            background-image: 
+                linear-gradient(#111 20%, transparent 20%), linear-gradient(to right, #111 40%, transparent 40%),
+                linear-gradient(#111 60%, transparent 60%), linear-gradient(to right, #111 80%, transparent 80%);
+            background-size: 100px 100px;
+            opacity: 0.5;
+        }
+        .runner-silhouette {
+            position: absolute;
+            width: 80px; height: 120px;
+            bottom: 50%; left: 50%;
+            transform: translateX(-50%);
+            background-color: #000;
+            clip-path: polygon(50% 0, 65% 25%, 60% 50%, 70% 100%, 30% 100%, 40% 50%, 35% 25%);
+        }
+
+        /* --- Keyboard Navigation Highlight --- */
+        .selected {
+            border: 2px solid var(--primary-color) !important;
+            box-shadow: 0 0 15px var(--primary-color) !important;
+        }
+
+    </style>
+</head>
+<body>
+    <div id="intro-overlay">
+        <button id="startButton">Start Intro</button>
+        <button id="skipIntroButton">Skip Intro & Start Game</button>
+        <button id="startNoDebtButton">Start (No Debt - Test)</button>
+        <input type="text" id="loadCodeInput" placeholder="Enter Save Code...">
+        <button id="loadGameButton">Load Game</button>
+    </div>
+
+    <div id="world-intro-cutscene-container">
+        <div class="scene-container">
+            <div class="scene scene-1 active">
+                <div class="corp-tower tower-1"></div>
+                <div class="corp-tower tower-2"></div>
+                <div class="corp-tower tower-3"></div>
+                <div class="flying-vehicle"></div>
+                <div class="flying-vehicle far"></div>
+                <div class="cutscene-text"><p>Up there, in the Corporate Plaza, they pull the strings. They took everything from me. My past, my future. Left me with nothing but a name... Rufus.</p><div class="cutscene-prompt">[E] Continue</div></div>
+            </div>
+            <div class="scene scene-2">
+                <div class="crane"></div>
+                <div class="unfinished-building"></div>
+                <div class="cutscene-text"><p>The city is a scar, constantly being rebuilt for the rich. The Construction Zone... a graveyard of old promises, guarded by their automated sentinels.</p><div class="cutscene-prompt">[E] Continue</div></div>
+            </div>
+            <div class="scene scene-3">
+                <div class="cz-fence"></div>
+                <div class="cz-warning-sign"></div>
+                <div class="cutscene-text"><p>Then there's the Containment Zone. A true dead end. They say the air itself is toxic. A place I know all too well... a place I never wanted to see again.</p><div class="cutscene-prompt">[E] Continue</div></div>
+            </div>
+            <div class="scene scene-4">
+                <div class="slum-building slum-3"></div>
+                <div class="slum-building slum-1"></div>
+                <div class="slum-building slum-2">
+                    <div class="neon-sign sign-1">CHROME</div>
+                </div>
+                <div class="cutscene-text"><p>And at the bottom of it all, you hit the Slums. A maze of rust and rain where everyone is running from something. For me, it's a mountain of debt that gets bigger every day.</p><div class="cutscene-prompt">[E] Continue</div></div>
+            </div>
+            <div class="scene scene-5">
+                <div class="chrome-arm"></div>
+                <div id="spark-container"></div>
+                <div class="cutscene-text"><p>To survive, you trade away parts of yourself. Flesh for chrome. A new eye to see the angles, a subdermal plate to stop a bullet. Each piece a reminder of what you've lost.</p><div class="cutscene-prompt">[E] Continue</div></div>
+            </div>
+            <div class="scene scene-6">
+                <div class="deal-background">
+                    <div class="silhouette silhouette-1"></div>
+                    <div class="silhouette silhouette-2"></div>
+                </div>
+                <div class="deal">
+                    <div class="datachip"></div>
+                </div>
+                <div class="cutscene-text"><p>Down here, information is the only currency that matters more than nuyen. A datastick can be a lifeline... or a death sentence. It's how I'll get my start.</p><div class="cutscene-prompt">[E] Continue</div></div>
+            </div>
+            <div class="scene scene-7">
+                <div class="grid-line h gl1"></div><div class="grid-line h gl2"></div><div class="grid-line h gl3"></div><div class="grid-line h gl4"></div>
+                <div class="grid-line v gl5"></div><div class="grid-line v gl6"></div><div class="grid-line v gl7"></div>
+                <div class="ice-construct"></div>
+                <div class="cutscene-text"><p>And then there's the other world. The Matrix. A river of pure data, guarded by killer programs. They call it Black ICE. I call it an opportunity.</p><div class="cutscene-prompt">[E] Continue</div></div>
+            </div>
+            <div class="scene scene-8">
+                <div class="city-silhouette"></div>
+                <div class="runner-silhouette"></div>
+                <div class="cutscene-text"><p>They think I'm just another piece of static in their perfect system. Another ghost in their machine. But they're wrong. My name is Rufus, and I'm not just a runner. I'm the glitch they can't erase.</p><div class="cutscene-prompt">[E] Continue</div></div>
+            </div>
+        </div>
+    </div>
+
+    <canvas id="introCanvas" class="canvas" style="display:none;"></canvas>
+    <div id="game-start-container">
+        <button id="startGameButton">Start Game</button>
+    </div>
+
+    <div id="terminal-animation-container">
+        <canvas id="matrix-canvas" class="canvas"></canvas>
+        <div id="text-overlay">
+            <div id="log-container"></div>
+            <span id="final-text"></span><span id="cursor" class="cursor" style="display: none;"></span>
+        </div>
+    </div>
+
+    <div id="game-container" style="display: none;">
+        <canvas id="gameCanvas" class="canvas"></canvas>
+        <div id="ui-overlay">
+            <div class="hud">
+                <div class="hud-left">
+                    <div class="stat-bar-container">
+                        <div class="stat-bar-label">
+                            <span>HEALTH</span>
+                            <span id="weapon-display">PISTOL</span>
+                        </div>
+                        <div class="stat-bar"><div id="health-bar-inner" class="stat-bar-inner"></div></div>
+                    </div>
+                     <div class="stat-bar-container">
+                        <div class="stat-bar-label">XP</div>
+                        <div class="stat-bar"><div id="xp-bar-inner" class="stat-bar-inner"></div></div>
+                    </div>
+                </div>
+                 <div class="hud-right">
+                    <span id="level-display">LVL: 1</span>
+                    <span id="nuyen-display">NUYEN: 0¥</span>
+                </div>
+            </div>
+            <div id="quest-display"></div>
+            <div id="controls-display"></div>
+        </div>
+        <div id="top-right-controls">
+            <div id="audio-controls-wrapper">
+                <button id="mute-btn" title="Toggle Mute">
+                    <svg class="icon-unmuted" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"></path></svg>
+                    <svg class="icon-muted" style="display: none;" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><line x1="23" y1="9" x2="17" y2="15"></line><line x1="17" y1="9" x2="23" y2="15"></line></svg>
+                </button>
+                <div id="extended-audio-controls">
+                    <input type="range" id="volume-slider" min="0" max="1" step="0.01" value="0.2">
+                    <button id="next-track-btn" title="Next Track">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 4 15 12 5 20 5 4"></polygon><line x1="19" y1="5" x2="19" y2="19"></line></svg>
+                    </button>
+                </div>
+            </div>
+            <button id="fullscreen-btn" title="Toggle Fullscreen">
+                 <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
+            </button>
+        </div>
+        <div id="message-box" class="message-box"></div>
+        
+        <div id="game-over-screen">
+            <h1>FLATLINED</h1>
+            <p>Your vitals have ceased. A backup trauma system can revive you... for a price.</p>
+            <button id="continue-button">Continue (1000¥)</button>
+            <p class="restart-message">Not enough nuyen. Refresh to run again.</p>
+        </div>
+        
+        <div id="main-vendor-ui" class="vendor-ui">
+            <div class="vendor-tabs">
+                <div class="vendor-tab active" data-tab="arms">Arms</div>
+                <div class="vendor-tab" data-tab="cyber">Cyberware</div>
+                <div class="vendor-tab" data-tab="network">Network</div>
+            </div>
+            <div class="vendor-content">
+                 <div id="vendor-list-arms" class="vendor-item-list-pane active"></div>
+                 <div id="vendor-list-cyber" class="vendor-item-list-pane"></div>
+                 <div id="vendor-list-network" class="vendor-item-list-pane"></div>
+                 <button class="vendor-close-button">Leave</button>
+            </div>
+        </div>
+        
+        <div id="dialog-overlay"></div>
+        <div id="dialog-box">
+            <canvas id="dialog-portrait"></canvas>
+            <div id="dialog-main-content">
+                <div id="dialog-speaker"></div>
+                <div id="dialog-text"></div>
+                <div id="dialog-options"></div>
+                <div id="dialog-prompt">[E] Continue</div>
+            </div>
+        </div>
+
+        <div id="rpg-battle-container">
+            <canvas id="battle-scene-canvas" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; pointer-events: none;"></canvas>
+            <div id="battle-scene" style="position: relative; z-index: 2; flex-grow: 1;">
+                <div id="battle-player" class="battle-entity">
+                    <div class="battle-entity-name">DECK</div>
+                    <div class="battle-health-bar-container">
+                        <div id="battle-player-health" class="battle-health-bar"></div>
+                    </div>
+                </div>
+                <div id="battle-ice" class="battle-entity">
+                    <div class="battle-entity-name">ICE</div>
+                    <div class="battle-health-bar-container">
+                        <div id="battle-ice-health" class="battle-health-bar"></div>
+                    </div>
+                </div>
+            </div>
+            <div id="battle-log-container">
+                <span id="battle-log-text"></span>
+            </div>
+            <div id="battle-actions-container">
+                <button data-action="attack">Attack</button>
+                <button data-action="firewall">Firewall</button>
+                <button data-action="debug">Debug</button>
+                <button data-action="flee">Flee</button>
+            </div>
+        </div>
+
+        <div id="status-menu-overlay">
+            <div id="status-menu-panel">
+                <div class="status-menu-header">
+                    <h2>SYSTEM STATUS</h2>
+                    <span class="close-prompt">[R] TO CLOSE</span>
+                </div>
+                <div id="status-section-main" class="status-section">
+                    <h3>// RUNNER INFO</h3>
+                    <div class="status-grid">
+                        <span>Level:</span> <span id="status-level"></span>
+                        <span>Health:</span> <span id="status-health"></span>
+                        <span>Nuyen:</span> <span id="status-nuyen"></span>
+                        <span>Next Lvl:</span> <span id="status-xp"></span>
+                    </div>
+                    <h3 style="margin-top: 20px;">// EQUIPMENT</h3>
+                    <ul id="equipment-list" class="equipment-list"></ul>
+                    <h3 style="margin-top: 20px;">// CYBERWARE</h3>
+                    <ul id="cyberware-list" class="equipment-list"></ul>
+                </div>
+                <div id="quest-log-section" class="status-section">
+                    <h3>// JOB LOG</h3>
+                    <div id="active-quests" class="quest-list"></div>
+                    <h3 style="margin-top: 20px;">// COMPLETED</h3>
+                    <div id="completed-quests" class="quest-list"></div>
+                </div>
+                <div class="status-menu-footer">
+                    <button id="saveGameButton">Save Game</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="save-code-modal">
+            <div id="save-code-box">
+                <h3>SAVE CODE</h3>
+                <p>Copy this code to save your progress.</p>
+                <textarea id="saveCodeTextarea" readonly></textarea>
+                <button id="copySaveCodeButton">Copy to Clipboard</button>
+                <button id="closeSaveModalButton">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="first-kill-cutscene-container">
+        <div class="scene-container">
+            <div class="scene scene-1 active">
+                <div class="rain r1"></div><div class="rain r2"></div><div class="rain r3"></div>
+                <div class="fallen-silhouette"></div>
+                <div class="cutscene-text"><p><span class="narration-text">The first one is always the hardest. You watch the light fade from their eyes and wonder... what's the difference between them and me? A few nuyen? A bit of luck?</span></p><div class="cutscene-prompt">[E] Continue</div></div>
+            </div>
+            <div class="scene scene-2">
+                <div class="glitch-effect"></div>
+                <div class="ice-text">FATAL_ERROR</div>
+                <div class="cutscene-text"><p><span class="narration-text">My luck almost ran out last week. Some new corpo ICE, a firewall I'd never seen. It fried my datajack, turned my world to static. I was lucky I wasn't geeked right then and there.</span></p><div class="cutscene-prompt">[E] Continue</div></div>
+            </div>
+            <div class="scene scene-3">
+                <div class="hand hand-jake"></div>
+                <div class="hand hand-rufus"></div>
+                <div class="datajack"></div>
+                <div class="cutscene-text"><p><span class="narration-text">Jake got me a new jack. A back-alley special. Now I owe him a thousand nuyen I don't have. He wasn't smiling when he made the deal.</span></p><div class="cutscene-prompt">[E] Continue</div></div>
+            </div>
+            <div class="scene scene-4">
+                <div class="nuyen-chip"></div>
+                <div class="cutscene-text"><p><span class="narration-text">This is the price of a life. Not enough to pay off my debt. Not enough to get out. Just enough to keep running.</span></p><div class="cutscene-prompt">[E] Continue</div></div>
+            </div>
+            <div class="scene scene-5">
+                <div class="head-silhouette">
+                    <div class="jack-port"></div>
+                </div>
+                <div class="cutscene-text"><p><span class="narration-text">This port is a constant reminder. A hole in my head where the lightning almost got in. A promise I made in a dark room, sealed with cheap chrome and desperation.</span></p><div class="cutscene-prompt">[E] Continue</div></div>
+            </div>
+            <div class="scene scene-6">
+                <div class="puddle-reflection"></div>
+                <div class="cutscene-text"><p><span class="narration-text">Sometimes, in the reflection of the rain-slicked streets, I don't recognize the face staring back. Is it me? Or just the ghost of who I used to be?</span></p><div class="cutscene-prompt">[E] Continue</div></div>
+            </div>
+            <div class="scene scene-7">
+                 <div class="city-silhouette"></div>
+                <div class="cutscene-text"><p><span class="narration-text">This city... it chews you up and spits you out. A concrete beast that feeds on dreams. You either become a monster to survive, or you become meat.</span></p><div class="cutscene-prompt">[E] Continue</div></div>
+            </div>
+            <div class="scene scene-8">
+                <div class="runner-pov">
+                    <div class="hand-pov hand-left"></div>
+                    <div class="hand-pov hand-right"></div>
+                </div>
+                <div class="cutscene-text"><p><span class="narration-text">So now I'm here. Taking a life to save my own. One down... how many more until I'm square? Until I'm free? Or until I'm the one lying in the rain?</span></p><div class="cutscene-prompt">[E] Continue</div></div>
+            </div>
+        </div>
+    </div>
+    
+    <audio id="introAudio" src="https://storage.googleapis.com/udio-artifacts-c33fe3ba-3ffe-471f-92c8-5dfef90b3ea3/samples/d466f3b9fb574fd2bea9be4667272b8a/1/The%2520Untitled.mp3" preload="auto"></audio>
+    <audio id="worldIntroAudio" src="https://storage.googleapis.com/udio-artifacts-c33fe3ba-3ffe-471f-92c8-5dfef90b3ea3/samples/d4d2a5e707314b069a2cab3c37f4a411/1/The%2520Untitled.mp3" preload="auto"></audio>
+    <audio id="cutsceneAudio" src="https://storage.googleapis.com/udio-artifacts-c33fe3ba-3ffe-471f-92c8-5dfef90b3ea3/samples/29e780aab80244f7bb08888ae02e0c91/1/The%2520Untitled.mp3" preload="auto"></audio>
+    <audio id="bgm1" src="https://storage.googleapis.com/udio-artifacts-c33fe3ba-3ffe-471f-92c8-5dfef90b3ea3/samples/70038bb6b2fe4082ba96c84e38a7df0d/1/The%2520Untitled.mp3"></audio>
+    <audio id="bgm2" src="https://storage.googleapis.com/udio-artifacts-c33fe3ba-3ffe-471f-92c8-5dfef90b3ea3/samples/70038bb6b2fe4082ba96c84e38a7df0d/2/The%2520Untitled.mp3"></audio>
+    <audio id="bgm3" src="https://storage.googleapis.com/udio-artifacts-c33fe3ba-3ffe-471f-92c8-5dfef90b3ea3/samples/9f7493ffc2dc4a20bf414edad731769c/1/The%2520Untitled.mp3"></audio>
+    <audio id="bgm4" src="https://storage.googleapis.com/udio-artifacts-c33fe3ba-3ffe-471f-92c8-5dfef90b3ea3/samples/9f7493ffc2dc4a20bf414edad731769c/2/The%2520Untitled.mp3"></audio>
+    <audio id="bgm5" src="https://storage.googleapis.com/udio-artifacts-c33fe3ba-3ffe-471f-92c8-5dfef90b3ea3/samples/6fb2d2a30853454d9451156791edf565/1/The%2520Untitled.mp3"></audio>
+    <audio id="bgm6" src="https://storage.googleapis.com/udio-artifacts-c33fe3ba-3ffe-471f-92c8-5dfef90b3ea3/samples/6fb2d2a30853454d9451156791edf565/2/The%2520Untitled.mp3"></audio>
+    <audio id="bgm7" src="https://storage.googleapis.com/udio-artifacts-c33fe3ba-3ffe-471f-92c8-5dfef90b3ea3/samples/b7f2f3c5a3314558a379dd572f784874/1/The%2520Untitled.mp3"></audio>
+    <audio id="bgm8" src="https://storage.googleapis.com/udio-artifacts-c33fe3ba-3ffe-471f-92c8-5dfef90b3ea3/samples/b7f2f3c5a3314558a379dd572f784874/2/The%2520Untitled.mp3"></audio>
+    <audio id="bgm9" src="https://storage.googleapis.com/udio-artifacts-c33fe3ba-3ffe-471f-92c8-5dfef90b3ea3/samples/9f733f226f344f7e87c55fb210575746/2/The%2520Untitled.mp3"></audio>
+    <audio id="bgm10" src="https://storage.googleapis.com/udio-artifacts-c33fe3ba-3ffe-471f-92c8-5dfef90b3ea3/samples/9f733f226f344f7e87c55fb210575746/1/The%2520Untitled.mp3"></audio>
+    <audio id="bgm11" src="https://storage.googleapis.com/udio-artifacts-c33fe3ba-3ffe-471f-92c8-5dfef90b3ea3/samples/87b622b4ca3a4cff8cd364c6508f99c6/1/The%2520Untitled.mp3"></audio>
+    <audio id="bgm12" src="https://storage.googleapis.com/udio-artifacts-c33fe3ba-3ffe-471f-92c8-5dfef90b3ea3/samples/87b622b4ca3a4cff8cd364c6508f99c6/2/The%2520Untitled.mp3"></audio>
+<script>
+    document.addEventListener('DOMContentLoaded', () => {
+        // --- Game Setup ---
+        // Safely get all DOM elements and rendering contexts
+        const elements = {
+            gameContainer: document.getElementById('game-container'),
+            canvas: document.getElementById('gameCanvas'),
+            introCanvas: document.getElementById('introCanvas'),
+            introOverlay: document.getElementById('intro-overlay'),
+            startButton: document.getElementById('startButton'),
+            skipIntroButton: document.getElementById('skipIntroButton'),
+            startNoDebtButton: document.getElementById('startNoDebtButton'),
+            gameStartContainer: document.getElementById('game-start-container'),
+            startGameButton: document.getElementById('startGameButton'),
+            terminalAnimationContainer: document.getElementById('terminal-animation-container'),
+            matrixCanvas: document.getElementById('matrix-canvas'),
+            textOverlay: document.getElementById('text-overlay'),
+            logContainer: document.getElementById('log-container'),
+            finalText: document.getElementById('final-text'),
+            cursor: document.getElementById('cursor'),
+            uiOverlay: document.getElementById('ui-overlay'),
+            healthBar: document.getElementById('health-bar-inner'),
+            xpBar: document.getElementById('xp-bar-inner'),
+            level: document.getElementById('level-display'),
+            nuyen: document.getElementById('nuyen-display'),
+            weaponDisplay: document.getElementById('weapon-display'),
+            quest: document.getElementById('quest-display'),
+            controls: document.getElementById('controls-display'),
+            messageBox: document.getElementById('message-box'),
+            gameOverScreen: document.getElementById('game-over-screen'),
+            continueButton: document.getElementById('continue-button'),
+            fullscreenBtn: document.getElementById('fullscreen-btn'),
+            muteBtn: document.getElementById('mute-btn'),
+            volumeSlider: document.getElementById('volume-slider'),
+            nextTrackBtn: document.getElementById('next-track-btn'),
+            mainVendorUI: document.getElementById('main-vendor-ui'),
+            dialogOverlay: document.getElementById('dialog-overlay'),
+            dialogBox: document.getElementById('dialog-box'),
+            dialogPortrait: document.getElementById('dialog-portrait'),
+            dialogSpeaker: document.getElementById('dialog-speaker'),
+            dialogText: document.getElementById('dialog-text'),
+            dialogOptions: document.getElementById('dialog-options'),
+            dialogPrompt: document.getElementById('dialog-prompt'),
+            rpgBattleContainer: document.getElementById('rpg-battle-container'),
+            battleScene: document.getElementById('battle-scene'),
+            battleSceneCanvas: document.getElementById('battle-scene-canvas'),
+            battlePlayerHealth: document.getElementById('battle-player-health'),
+            battleIceHealth: document.getElementById('battle-ice-health'),
+            battleLogText: document.getElementById('battle-log-text'),
+            battleActionsContainer: document.getElementById('battle-actions-container'),
+            statusMenuOverlay: document.getElementById('status-menu-overlay'),
+            statusLevel: document.getElementById('status-level'),
+            statusHealth: document.getElementById('status-health'),
+            statusNuyen: document.getElementById('status-nuyen'),
+            statusXp: document.getElementById('status-xp'),
+            equipmentList: document.getElementById('equipment-list'),
+            cyberwareList: document.getElementById('cyberware-list'),
+            activeQuests: document.getElementById('active-quests'),
+            completedQuests: document.getElementById('completed-quests'),
+            introAudio: document.getElementById('introAudio'),
+            worldIntroAudio: document.getElementById('worldIntroAudio'),
+            cutsceneAudio: document.getElementById('cutsceneAudio'),
+            worldIntroCutsceneContainer: document.getElementById('world-intro-cutscene-container'),
+            firstKillCutsceneContainer: document.getElementById('first-kill-cutscene-container'),
+            bgm1: document.getElementById('bgm1'), bgm2: document.getElementById('bgm2'), bgm3: document.getElementById('bgm3'),
+            bgm4: document.getElementById('bgm4'), bgm5: document.getElementById('bgm5'), bgm6: document.getElementById('bgm6'),
+            bgm7: document.getElementById('bgm7'), bgm8: document.getElementById('bgm8'), bgm9: document.getElementById('bgm9'),
+            bgm10: document.getElementById('bgm10'), bgm11: document.getElementById('bgm11'), bgm12: document.getElementById('bgm12'),
+            loadGameButton: document.getElementById('loadGameButton'),
+            loadCodeInput: document.getElementById('loadCodeInput'),
+            saveGameButton: document.getElementById('saveGameButton'),
+            saveCodeModal: document.getElementById('save-code-modal'),
+            saveCodeTextarea: document.getElementById('saveCodeTextarea'),
+            copySaveCodeButton: document.getElementById('copySaveCodeButton'),
+            closeSaveModalButton: document.getElementById('closeSaveModalButton')
+        };
+        
+        // Safely get rendering contexts
+        elements.ctx = elements.canvas ? elements.canvas.getContext('2d') : null;
+        elements.introCtx = elements.introCanvas ? elements.introCanvas.getContext('2d') : null;
+        elements.matrixCtx = elements.matrixCanvas ? elements.matrixCanvas.getContext('2d') : null;
+        elements.portraitCtx = elements.dialogPortrait ? elements.dialogPortrait.getContext('2d') : null;
+
+        // --- Game State & Variables ---
+        const worldWidth = 9600, worldHeight = 7200;
+        let keys = {};
+        let messageTimeout, typeInterval;
+        const assets = {};
+        let physicalBg, containmentBg, constructionBg, corporateBg;
+        let lastShotTime = 0, lastGrenadeTime = 0;
+        let isAimingGrenade = false;
+        let isMuted = false;
+        let lastVolume = 0.2;
+        let currentTrackIndex = -1;
+        let currentGlitchQuest = null;
+        let firstKillCutscenePlayed = false;
+
+        const camera = { x: 0, y: 0 };
+        const player = {
+            x: 4800, y: 3600, width: 40, height: 40,
+            baseSpeed: 4, speed: 4, health: 100, maxHealth: 100,
+            level: 1, xp: 0, xpToNextLevel: 100, nuyen: -1000,
+            weapons: ['pistol'], activeWeapon: 'pistol', grenades: 5,
+            cyberware: [], accuracyBonus: 0, matrixDamageBonus: 0,
+            isStealthed: false, lastDir: { x: 1, y: 0 }
+        };
+        let bullets = [], enemyBullets = [], explosions = [], grenades = [], enemies = [], npcs = [], obstacles = [], safeZones = [], lootItems = [], lootContainers = [];
+        let questPackage = null;
+        let activeQuests = [];
+        let completedQuests = [];
+        let trackedQuestId = null;
+        
+        const zones = {
+            corporatePlaza: { x: 0, y: 0, width: worldWidth, height: worldHeight },
+            construction:   { x: 1200, y: 1200, width: 7200, height: 4800 },
+            containment:    { x: 2400, y: 2400, width: 4800, height: 2400 },
+            slums:          { x: 3200, y: 3000, width: 3200, height: 1200 }
+        };
+        
+        let matrixMap = [];
+        const matrixPlayer = { x: 1.5, y: 1.5, dirX: -1, dirY: 0, planeX: 0, planeY: 0.66, moveSpeed: 0.05, rotSpeed: 0.03 };
+        
+        let battleState = {};
+        let lastSafeState = {};
+        let musicHasStarted = false;
+        let gameState = 'intro';
+        let previousGameState = 'intro';
+        
+        // --- UI Navigation State ---
+        let currentDialogueState = { selectedIndex: 0 };
+        let vendorState = { selectedTabIndex: 0, selectedItemIndex: 0 };
+        let statusMenuState = { selectedQuestIndex: 0 };
+        
+        // --- Terminal Jack-in Animation ---
+        let terminalAnimationState = 'initializing';
+        let terminalDrops;
+        const terminalChars = 'アァカサタナハマヤャラワガザダバパイィキシチニヒミリヰギジヂビピウゥクスツヌフムユュルグズブヅプエェケセテネヘメレヱゲゼデベペオォコソトノホモヨョロヲゴゾドボポヴッン' + 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' + '0123456789';
+        
+        function setupTerminalAnimation() {
+            if (!elements.matrixCanvas || !elements.matrixCtx) return;
+            elements.matrixCanvas.width = window.innerWidth;
+            elements.matrixCanvas.height = window.innerHeight;
+            const fontSize = 16;
+            const columns = Math.floor(elements.matrixCanvas.width / fontSize);
+            terminalDrops = [];
+            for (let i = 0; i < columns; i++) {
+                terminalDrops[i] = 1;
+            }
+            elements.matrixCtx.font = `${fontSize}px 'Courier New'`;
+        }
+
+        function drawTerminalRain() {
+            elements.matrixCtx.fillStyle = 'rgba(0, 0, 0, 0.05)';
+            elements.matrixCtx.fillRect(0, 0, elements.matrixCanvas.width, elements.matrixCanvas.height);
+            elements.matrixCtx.fillStyle = '#00ff41'; 
+            for (let i = 0; i < terminalDrops.length; i++) {
+                const text = terminalChars.charAt(Math.floor(Math.random() * terminalChars.length));
+                const x = i * 16;
+                const y = terminalDrops[i] * 16;
+                elements.matrixCtx.fillText(text, x, y);
+                if (y > elements.matrixCanvas.height && Math.random() > 0.975) {
+                    terminalDrops[i] = 0;
+                }
+                terminalDrops[i]++;
+            }
+        }
+        
+        function typeWriter(text, onComplete, speed = 50) {
+            let i = 0;
+            const targetElement = gameState === 'battle' ? elements.battleLogText : elements.finalText;
+            targetElement.textContent = '';
+            
+            if (gameState !== 'battle') {
+                elements.cursor.style.display = 'inline-block'; 
+                elements.logContainer.style.display = 'none'; 
+                elements.textOverlay.style.textAlign = 'center';
+            }
+
+            clearInterval(typeInterval);
+            typeInterval = setInterval(() => {
+                if (i < text.length) {
+                    targetElement.textContent += text.charAt(i);
+                    i++;
+                } else {
+                    clearInterval(typeInterval);
+                    if (onComplete) {
+                        setTimeout(onComplete, 1000);
+                    }
+                }
+            }, speed);
+        }
+
+        function displayLogSequence(messages, container, finalCallback) {
+            let index = 0;
+            container.innerHTML = ''; // Clear previous logs
+            elements.textOverlay.style.opacity = '1';
+            function showNextLog() {
+                if (index < messages.length) {
+                    const logLine = document.createElement('div');
+                    logLine.className = 'log-line';
+                    logLine.textContent = `> ${messages[index]}`;
+                    container.appendChild(logLine);
+                    index++;
+                    setTimeout(showNextLog, Math.random() * 400 + 150);
+                } else if (finalCallback) {
+                    setTimeout(finalCallback, 1500);
+                }
+            }
+            showNextLog();
+        }
+
+        let terminalAnimationId;
+        function terminalAnimate() {
+            if (terminalAnimationState !== 'rain') {
+                cancelAnimationFrame(terminalAnimationId);
+                return;
+            }
+            drawTerminalRain();
+            terminalAnimationId = requestAnimationFrame(terminalAnimate);
+        }
+
+        function startTerminalJackingAnimation(onCompleteCallback) {
+            elements.terminalAnimationContainer.style.display = 'block';
+            setupTerminalAnimation();
+            const logMessages = [
+                'INITIATING REALITY-DISTORTION FIELD...',
+                'SYNCING CHRONOSIGNATURE...',
+                'DECRYPTING BLACK ICE (LAYER 1/3)... [OK]',
+                'DECRYPTING BLACK ICE (LAYER 2/3)... [OK]',
+                'DECRYPTING BLACK ICE (LAYER 3/3)... [OK]',
+                'BYPASSING SATO-7 SECURITY DAEMON...',
+                'ROUTING THROUGH GHOST PROXIES...',
+                'NEURAL HANDSHAKE COMPLETE.',
+                'LOADING VIRTUAL CONSTRUCT...'
+            ];
+            terminalAnimationState = 'rain';
+            terminalAnimate();
+            setTimeout(() => {
+                displayLogSequence(logMessages, elements.logContainer, () => {
+                    terminalAnimationState = 'connected';
+                    elements.textOverlay.style.opacity = '0'; 
+                    setTimeout(() => {
+                        elements.terminalAnimationContainer.style.backgroundColor = '#fff';
+                        elements.matrixCanvas.style.opacity = '0';
+                        setTimeout(() => {
+                            elements.terminalAnimationContainer.style.backgroundColor = '#000';
+                            elements.textOverlay.style.opacity = '1';
+                            typeWriter('JACK-IN COMPLETE.', () => {
+                                elements.terminalAnimationContainer.style.display = 'none';
+                                elements.matrixCanvas.style.opacity = '1';
+                                if(onCompleteCallback) onCompleteCallback();
+                            }, 150);
+                        }, 200);
+                    }, 1000);
+                });
+            }, 1000); 
+        }
+        // --- Asset Generation, Databases, Quests ---
+        function createPixelArt(data, p, size) {
+            const c = document.createElement('canvas'), w = data[0].length * size, h = data.length * size;
+            c.width = w; c.height = h;
+            const ctx = c.getContext('2d');
+            for (let y = 0; y < data.length; y++) for (let x = 0; x < data[y].length; x++) if (p[data[y][x]]) { ctx.fillStyle = p[data[y][x]]; ctx.fillRect(x*size, y*size, size, size); }
+            return c;
+        }
+        
+        function generateAssets() {
+            const palettes = {
+                player: { T: '#8B4513', k: '#A0522D', S: '#c2c2c2', h: '#ffae7a', d: '#3498db', b: '#2980b9', L:'#4a4a4a' },
+                enemy: { h: '#e0e0e0', R: '#e74c3c', G: '#95a5a6', g: '#7f8c8d', b: '#34495e', B:'#2c3e50' },
+                elite: { h: '#f39c12', R: '#d35400', G: '#34495e', g: '#2c3e50', b: '#c0392b', B: '#a81e1e'},
+                bounty: { h: '#e84393', R: '#d63031', G: '#6c5ce7', g: '#2d3436', b: '#0984e3', B: '#000' },
+                sentinel: { r: '#ff4136', R: '#c0392b', g: '#485460', G: '#2d3436', w: '#fff' },
+                corporate: { s: '#34495e', h: '#ecf0f1', j: '#2980b9', b: '#2c3e50' },
+                npc: { s: '#d1ccc0', h: '#3d3f4c', j: '#c0392b', b: '#2c3e50', C: '#00ffff' },
+                slick: { s: '#111', h: '#e84393', j: '#000', b: '#333' },
+                anya: { s: '#fff', h: '#3498db', j: '#ecf0f1', b: '#bdc3c7' },
+                glitch: { s: '#2d3436', h: '#00ff41', j: '#555', b: '#111', C: '#ff00ff' },
+                bullet: { p: { y: '#f1c40f', Y: '#f39c12', o: '#e67e22' }, e: { r: '#ff7675', R: '#d63031'} },
+                world: { obs: { '#': '#485460', g: '#2d3436'}, term: { b: '#7f8c8d', g: '#2c3e50', S: '#00ff00', k: '#34495e' }, vend: { d: '#2c3e50', g: '#576574', y: '#f1c40f', r:'#c0392b'}, arms: {'d':'#2c3e50', 'g':'#576574', 'w':'#bdc3c7', 'r':'#c0392b'}, loot: { b: '#634e34', d: '#4d3b29', l: '#826644' } },
+                matrix: { iceRpg: { m: '#ff00ff', M: '#be2edd', b: '#4b0082', B: '#2e004f', e: '#ffffff' } },
+                loot: { n: '#f1c40f', N: '#f39c12', h: '#d63031', H: '#ff7675', w: '#fff', y: '#f1c40f', Y: '#f39c12', d: '#d35400' } // Added quest package colors
+            };
+            assets.player = createPixelArt(['..TTTT..','.TkkkkT.','TkShhSkT','TkdbbdkT','.dbbbbd.','.d.bb.d.','..b..b..','..L..L..'], palettes.player, 2.5);
+            assets.enemy = createPixelArt(['..hhhh..','.hRRRRhh','hRGRGGRh','hGGGGGGh','.gGGGGg.','.g.gg.g.','..b..b..','..B..B..'], palettes.enemy, 2.5);
+            assets.elite = createPixelArt(['..hhhh..','.hRRRRhh','hRGRGGRh','hGGGGGGh','.gGGGGg.','.g.gg.g.','..b..b..','..B..B..'], palettes.elite, 2.5);
+            assets.bounty = createPixelArt(['..hhhh..','.hRRRRhh','hRGRGGRh','hGGGGGGh','.gGGGGg.','.g.gg.g.','..b..b..','..B..B..'], palettes.bounty, 3);
+            assets.sentinel = createPixelArt(['.gGGg.','gRwRg.','GRwrG.','gRwRg.','.gGGg.'], palettes.sentinel, 3);
+            assets.corporate = createPixelArt(['.ssss.','shhssh','sjjjjs','sbbbbs','.sbbs.','..ss..'], palettes.corporate, 8);
+            assets.npc = createPixelArt(['.ssss.','shhssh','sjjjjs','sbbbbs','.sbbs.','..ss..'], palettes.npc, 8);
+            assets.slick = createPixelArt(['.ssss.','shhssh','sjjjjs','sbbbbs','.sbbs.','..ss..'], palettes.slick, 8);
+            assets.anya = createPixelArt(['.ssss.','shhssh','sjjjjs','sbbbbs','.sbbs.','..ss..'], palettes.anya, 8);
+            assets.glitch = createPixelArt(['.ssss.','shhssh','sCjCjs','sbbbbs','.sbbs.','..ss..'], palettes.glitch, 8);
+            assets.cortexNpc = createPixelArt(['.ssss.','sCCssh','sjjjjs','sbbbbs','.sbbs.','..ss..'], palettes.npc, 8);
+            assets.playerBullet = createPixelArt(['.yo.','yYOy','.yo.'], palettes.bullet.p, 2);
+            assets.enemyBullet = createPixelArt(['.r.','rRr','.r.'], palettes.bullet.e, 2);
+            assets.obstacle = createPixelArt(['#g#g', 'g#g#', '#g#g', 'g#g#'], palettes.world.obs, 20);
+            assets.terminal = createPixelArt(['bbbbbb','bSgSgb','bSgSgb','bSgSgb','bkkkkb','bbbbbb'], palettes.world.term, 8);
+            assets.chopShop = createPixelArt(['.dggd.','dyyygd','drrygd','.dggd.','..dd..'], palettes.world.vend, 8);
+            assets.armsDealer = createPixelArt(['.dggd.','dwwgd','drrgd','.dggd.','..dd..'], palettes.world.arms, 8);
+            assets.iceRpg = createPixelArt(['..e...m...e..','.emem.m.memem.','emMMm.m.mMMme','mMbBmbmbmBbBm','.bBBBbbbBBBbb.','..bBBBbBBBbb..','...bBBBBBb...','....bBBBb....','.....bbb.....'], palettes.matrix.iceRpg, 15);
+            assets.nuyenDrop = createPixelArt(['.nNn.','n.N.n','.nNn.'], palettes.loot, 3);
+            assets.healthDrop = createPixelArt(['.w.','whw','.w.'], palettes.loot, 4);
+            assets.lootContainer = createPixelArt(['dddddd', 'dbbbbd', 'dbbbbd', 'dbbbbd', 'dbbbbd', 'dddddd'], palettes.world.loot, 5);
+            assets.lootContainerOpen = createPixelArt(['dllddl', 'd....d', 'd....d', 'd....d', 'd....d', 'dddddd'], palettes.world.loot, 5);
+            assets.questPackage = createPixelArt(['.dYd.','dYYYd','dYyYd','.dyd.'], palettes.loot, 5);
+            physicalBg = createPixelArt(['.d.d', 'd.d.', '.d.d', 'd.d.'], {'.': '#212121', d: '#313131'}, 40);
+            containmentBg = createPixelArt(['.r.r', 'r.r.', '.r.r', 'r.r.'], {'.': '#2c3e50', r: '#34495e'}, 40);
+            constructionBg = createPixelArt(['.y.y', 'y.y.', '.y.y', 'y.y.'], {'.': '#4a4a4a', y: '#5a5a5a'}, 40);
+            corporateBg = createPixelArt(['.c.c', 'c.c.', '.c.c', 'c.c.'], {'.': '#bdc3c7', c: '#ecf0f1'}, 40);
+        }
+
+        const loreDatabase = {
+            "lore01": "Data logs indicate the 'Containment Zone' was a failed urban renewal project. The corps walled it off and left the inhabitants to fend for themselves. Now it's a haven for smugglers, gangs, and worse.",
+            "lore02": "Nuyen. The lifeblood of the city. Digital currency that flows from corp to corp, runner to fixer. Without it, you're nothing. With it, you can be anything... for a price.",
+        };
+        const questDatabase = {
+            "q00_debt":{"id":"q00_debt","title":"Pay Your Dues","objective":"You owe Jake Armitage 1,000¥. Earn some scratch and pay him back.","dialogue":{"start":{"speaker":"Jake Armitage","text":"You woke up on my floor. You owe me 1,000 nuyen for the trouble. Don't come back 'til you can pay.","next":"check_debt"},"check_debt":{"speaker":"Jake Armitage","text":"You got my money?","options":[{"text":"Yeah, I got it. (Settle up)","next":"pay_debt","action":"completeQuest","condition":()=>player.nuyen>=0},{"text":"Not yet.","next":"not_yet"}]},"pay_debt":{"speaker":"Jake Armitage","text":"Good. Now we can talk business. I've got a line on a datastick job..."},"not_yet":{"speaker":"Jake Armitage","text":"Then get out of my sight until you do."}}},
+            "q01_intro":{"id":"q01_intro","title":"The Datastick","objective":"Jack into a terminal and find the data node (yellow square) in the Matrix.","dialogue":{"start":{"speaker":"Jake Armitage","text":"Alright, chummer. First real job. A data courier went dark. His payload is in a secure node in the Matrix. Jack in, get the data. Simple.","options":[{"text":"I'm on it.","next":"accept","action":"startQuest"},{"text":"I need more details.","next":"details"}]},"details":{"speaker":"Jake Armitage","text":"It's a standard data retrieval. Find a terminal, punch through the ICE, grab the file. The client pays a grand. In or out?","options":[{"text":"I'm in.","next":"accept","action":"startQuest"},{"text":"Too risky.","next":"decline","action":"declineQuest"}]},"accept":{"speaker":"Jake Armitage","text":"That's what I like to hear. Don't screw this up."},"decline":{"speaker":"Jake Armitage","text":"Your loss. Don't come crying to me when you're broke."},"quest_accepted":{"speaker":"Jake Armitage","text":"The client is waiting, runner. Get it done."},"return_datastick":{"speaker":"Jake Armitage","text":"That was fast. Got the data?","options":[{"text":"Here it is. [Complete Quest]","next":"quest_complete","action":"completeQuest"}]},"quest_complete":{"speaker":"Jake Armitage","text":"Good work on that datastick. Here's your pay. Word is there's a new bounty on the wire, if you're interested."}}},
+            "q02_bounty":{"id":"q02_bounty","title":"Enforcer Bounty","objective":"Neutralize the rogue enforcer in the Containment Zone.","dialogue":{"start":{"speaker":"Jake Armitage","text":"A corpo enforcer went rogue. He's chromed to the gills and causing trouble. Client wants him retired. Permanently. Pay is 2500¥. Interested?","options":[{"text":"I'll take care of it.","next":"accept_bounty","action":"startQuest"},{"text":"Too hot for me.","next":"decline_bounty","action":"declineQuest"}]},"accept_bounty":{"speaker":"Jake Armitage","text":"He was last seen in the far sectors of the Containment Zone. Be careful, this one's a pro."},"decline_bounty":{"speaker":"Jake Armitage","text":"Suit yourself. The offer stands if you change your mind."},"quest_accepted":{"speaker":"Jake Armitage","text":"Find that enforcer and put him down."},"quest_complete":{"speaker":"Jake Armitage","text":"Nice work with that enforcer. Word on the street is there's a new player in the Construction Zone looking for runners. Calls himself Cortex. Might be worth a look.","action":"completeQuest"}}},
+            "jake_post_bounty":{"id":"jake_post_bounty","dialogue":{"start":{"speaker":"Jake Armitage","text":"Heard good things about that Cortex fellow. Might be worth checking out if you're looking for more work."}}},
+            "q03_cortex":{"id":"q03_cortex","title":"Corporate Espionage","objective":"Steal the prototype schematics from the Construction Zone.","dialogue":{"start":{"speaker":"Cortex","text":"You're new. Not many runners make it this deep. You looking for work, or just sightseeing?","options":[{"text":"Work sounds good.","next":"offer"},{"text":"Just passing through.","next":"dismiss"}]},"offer":{"speaker":"Cortex","text":"I need a prototype schematic lifted from a terminal in this sector. It's guarded by some nasty ICE. You handle that, and I'll make it worth your while.","options":[{"text":"I'm on it.","next":"accept","action":"startQuest"},{"text":"Sounds like a good way to die.","next":"decline","action":"declineQuest"}]},"accept":{"speaker":"Cortex","text":"Good. The terminal is deep in the factory complex in the Construction Zone. Don't get flatlined."},"decline":{"speaker":"Cortex","text":"Heh. Smart. Maybe you'll live another day."},"quest_accepted":{"speaker":"Cortex","text":"Those schematics won't steal themselves, runner."},"return_schematics":{"speaker":"Cortex","text":"Impressive. You got the data. Let's see what we have here.","options":[{"text":"Here are the schematics. [Complete Quest]","next":"quest_complete","action":"completeQuest"}]},"quest_complete":{"speaker":"Cortex","text":"Excellent work, runner. This will be very useful. Here's your payment."},"dismiss":{"speaker":"Cortex","text":"Then move along. This ain't a tourist spot."}}},
+            "cortex_post_quest":{"id":"cortex_post_quest","dialogue":{"start":{"speaker":"Cortex","text":"The wheels are in motion, thanks to you. I may have more work for you later."}}},
+            "doc_greeting":{"id":"doc_greeting","title":"Doc","dialogue":{"start":{"speaker":"Street Doc","text":"You look like you've seen better days. Need some work done?","options":[{"text":"Patch me up. (100¥)","next":"heal","action":"healPlayer","condition":()=>player.nuyen>=100&&player.health<player.maxHealth},{"text":"Show me the chrome.","next":"open_shop","action":"openCyberVendor"}]},"heal":{"speaker":"Street Doc","text":"Alright, hold still. This might sting."},"open_shop":{"speaker":"Street Doc","text":"The best chrome this side of the wall. Take a look."}}},
+            "q_glitch":{"id":"q_glitch","title":"Glitch's Vendetta","dialogue":{"start":{"speaker":"Glitch","text":"Another rat in the walls. You look... capable. I used to build the digital fortresses for these corps. Then they erased me. Now, I tear them down, one byte at a time. Care to help me make them bleed?","options":[{"text":"I like your style. What's the job?","next":"offer","action":"generateQuest"},{"text":"You're crazy. I'm out.","next":"dismiss"}]},"offer":{"speaker":"Glitch","text":"I've always got a job. A chance to throw a wrench in the corporate machine. The pay is decent, but the satisfaction... that's the real reward. You in?"},"dismiss":{"speaker":"Glitch","text":"Then get lost. The corps have already won your soul."},"quest_in_progress":{"speaker":"Glitch","text":"The job's not done. Don't come back until you've twisted the knife."},"quest_complete":{"speaker":"Glitch","text":"Heh. Good work. A small victory, but it's a start. I've already got another target lined up. Ready for more?","options":[{"text":"Let's do it.","next":"offer","action":"generateQuest"},{"text":"I need a break.","next":"dismiss"}]}}},
+            "q04_package": {"id": "q04_package", "title": "Special Delivery", "objective": "Retrieve a package from a drop point in the Containment Zone.", "dialogue": {"start": {"speaker": "Slick", "text": "Hey, choom. You look like you can handle yourself. I need a package picked up. Simple snatch and grab in the CZ. No questions asked. 2000 nuyen. In or out?", "options": [{"text": "I'm in.", "next": "accept", "action": "startQuest"}, {"text": "Smells like trouble.", "next": "decline"}]}, "accept": {"speaker": "Slick", "text": "Smart move. The drop is in the old clinic. Get the package and bring it back here. Don't look inside."}, "decline": {"speaker": "Slick", "text": "Your loss. More for the next runner."}, "quest_accepted": {"speaker": "Slick", "text": "Clock's ticking, choom. Get my package."}, "return_package": {"speaker": "Slick", "text": "You got it? Let's see.", "options": [{"text": "Here's the package. [Complete Quest]", "next": "quest_complete", "action": "completeQuest"}]}, "quest_complete": {"speaker": "Slick", "text": "Good work. Here's your eddies. Don't spend it all in one place."}}},
+            "q05_sabotage": {"id": "q05_sabotage", "title": "Cognitive Dissonance", "objective": "Destroy 3 research terminals in the Construction Zone.", "dialogue": {"start": {"speaker": "Anya", "text": "You... you're not one of them. I need help. My former employer, Zetatech, is working on something... monstrous. I can't let them finish. Will you help me?", "options": [{"text": "What's the job?", "next": "offer"}, {"text": "Not my problem.", "next": "decline"}]}, "offer": {"speaker": "Anya", "text": "They have three primary research terminals scattered across this zone. I need you to destroy them. It will set their project back months. I can pay you 4000 nuyen.", "options": [{"text": "I'll do it.", "next": "accept", "action": "startQuest"}, {"text": "Too risky.", "next": "decline"}]}, "accept": {"speaker": "Anya", "text": "Thank you. Be careful. Their security is top-notch. The terminals are marked with a blue Z."}, "decline": {"speaker": "Anya", "text": "I understand. The corps have eyes everywhere."}, "quest_accepted": {"speaker": "Anya", "text": "You've destroyed {progress}/3 terminals. Keep going."}, "quest_complete": {"speaker": "Anya", "text": "You did it... You actually did it. Thank you. Here's your pay. You've done a good thing today."}}}
+        };
+        const npcDatabase = {
+            "npc_jake":{"id":"npc_jake","x":zones.slums.x+200,"y":zones.slums.y+200,"width":48,"height":48,"dialogueId":"q00_debt","type":"quest"},
+            "npc_doc":{"id":"npc_doc","x":zones.slums.x+zones.slums.width-300,"y":zones.slums.y+200,"width":48,"height":48,"dialogueId":"doc_greeting","type":"info"},
+            "npc_cortex":{"id":"npc_cortex","x":zones.containment.x+zones.containment.width-300,"y":zones.containment.y+200,"width":48,"height":48,"dialogueId":"q03_cortex","type":"quest"}, 
+            "npc_glitch": {"id": "npc_glitch", "x": zones.construction.x + 100, "y": zones.construction.y + 100, "width": 48, "height": 48, "dialogueId": "q_glitch", "type": "quest"},
+            "npc_slick": {"id": "npc_slick", "x": zones.slums.x + 800, "y": zones.slums.y + 800, "width": 48, "height": 48, "dialogueId": "q04_package", "type": "quest"},
+            "npc_anya": {"id": "npc_anya", "x": zones.construction.x + 400, "y": zones.construction.y + 100, "width": 48, "height": 48, "dialogueId": "q05_sabotage", "type": "quest"}
+        };
+        const weaponStats = {pistol:{fireRate:250,damage:25},shotgun:{fireRate:700,damage:15,pellets:5,spread:.3},machine_gun:{fireRate:100,damage:18,spread:.1},railgun:{fireRate:1000,damage:100,piercing:true}};
+        const vendorDatabase = {arms:[{id:"shotgun",name:"Scattergun",cost:750,description:"Fires a spread of pellets.",type:"weapon"},{id:"machine_gun",name:"Assault Rifle",cost:1200,description:"High rate of fire.",type:"weapon"},{id:"railgun",name:"Railgun",cost:2500,description:"Piercing high-velocity slug.",type:"weapon"},{id:"grenade",name:"Grenade Pack",cost:150,description:"Pack of 3 explosives.",type:"consumable"}],cyber:[{id:"subdermal_armor",name:"Subdermal Armor",cost:800,description:"+25 Max Health.",type:"cyberware"},{id:"reflex_booster",name:"Reflex Booster",cost:1200,description:"+10% Movement Speed.",type:"cyberware"},{id:"smartlink",name:"Smartlink",cost:1500,description:"Reduces weapon spread.",type:"cyberware"},{id:"medkit",name:"Medkit",cost:25,description:"Restores 50 health.",type:"consumable"},{id:"deck_upgrade_1",name:"Deck Upgrade Mk.I",cost:500,description:"+10 Matrix Damage.",type:"cyberware"}],network:[{id:"penthouse_key",name:"Penthouse Key",cost:50000,description:"The ultimate prize. A luxury apartment in the Outer Rim.",type:"goal"}]};
+        
+        // --- MOVED THIS FUNCTION UP TO FIX REFERENCE ERROR ---
+        function updateQuestDisplay() {
+            if (trackedQuestId) {
+                const quest = activeQuests.find(q => q.id === trackedQuestId);
+                if (quest) {
+                    elements.quest.textContent = quest.objective.replace('{progress}', quest.progress);
+                    elements.quest.style.display = 'block';
+                } else {
+                    elements.quest.style.display = 'none';
+                }
+            } else {
+                elements.quest.style.display = 'none';
+            }
+        }
+
+        function startQuest(questId){
+            if(activeQuests.some(q=>q.id===questId))return;
+            const questData=questDatabase[questId];
+            if(!questData)return;
+            activeQuests.push({...questData,progress:0,completed:false});
+            trackedQuestId=questId;
+            updateQuestDisplay();
+            if(questId==="q02_bounty"){spawnBountyTarget()}
+            if(questId === "q04_package") { spawnQuestPackage(); }
+            if(questId === "q05_sabotage") {
+                for(let i = 0; i < 3; i++) {
+                    const pos = findValidSpawnPoint(zones.construction, 48, 48, [zones.containment, zones.slums, ...safeZones]);
+                    obstacles.push({ ...pos, width: 48, height: 48, isTerminal: true, questId: 'q05_sabotage' });
+                }
+            }
+        }
+        
+        function completeQuest(questId) {
+            const questIndex = activeQuests.findIndex(q => q.id === questId);
+            if (questIndex > -1) {
+                const quest = activeQuests[questIndex];
+                quest.completed = true; 
+                completedQuests.push(questId);
+                
+                if (trackedQuestId === questId) {
+                    trackedQuestId = null;
+                    updateQuestDisplay();
+                }
+                showMessage(`Quest Complete: ${quest.title}`, 3000);
+
+                if (questId === "q00_debt") {
+                    const jake = npcs.find(n => n.id === "npc_jake");
+                    if (jake) jake.dialogueId = 'q01_intro';
+                } else if (questId === "q01_intro") {
+                    giveXP(100);
+                    player.nuyen += 1000;
+                    const jake = npcs.find(n => n.id === "npc_jake");
+                    if (jake) jake.dialogueId = 'q02_bounty';
+                } else if (questId === "q02_bounty") {
+                    giveXP(500);
+                    player.nuyen += 2500;
+                    const jake = npcs.find(n => n.id === "npc_jake");
+                    if (jake) jake.dialogueId = 'jake_post_bounty';
+                } else if (questId === "q03_cortex") {
+                    giveXP(1000);
+                    player.nuyen += 5000;
+                    const cortex = npcs.find(n => n.id === "npc_cortex");
+                    if (cortex) cortex.dialogueId = 'cortex_post_quest';
+                } else if (questId === "q04_package") {
+                    giveXP(300);
+                    player.nuyen += 2000;
+                } else if (questId === "q05_sabotage") {
+                    giveXP(800);
+                    player.nuyen += 4000;
+                } else if (quest.isGlitchQuest) {
+                    giveXP(200);
+                    player.nuyen += 1500;
+                    currentGlitchQuest.completed = true;
+                }
+            }
+        }
+
+        function giveXP(amount){
+            player.xp+=amount;
+            showMessage(`+${amount} XP`,1500);
+            if(player.xp>=player.xpToNextLevel) levelUp();
+            if (!firstKillCutscenePlayed && amount > 0 && gameState === 'physical') {
+                startFirstKillCutscene();
+            }
+        }
+        function levelUp(){player.level++;player.xp-=player.xpToNextLevel;player.xpToNextLevel=Math.floor(player.xpToNextLevel*1.5);player.maxHealth+=20;player.health=player.maxHealth;showMessage(`LEVEL UP! You are now Level ${player.level}!`,4e3);spawnEnemies()}
+        
+        // --- World Initialization & Spawning ---
+        function findValidSpawnPoint(zone, objectWidth, objectHeight, avoidZones = []) {
+            let attempts = 0;
+            while (attempts < 500) {
+                attempts++;
+                const x = zone.x + Math.random() * (zone.width - objectWidth);
+                const y = zone.y + Math.random() * (zone.height - objectHeight);
+                const potentialPoint = { x, y, width: objectWidth, height: objectHeight };
+
+                const onObstacle = obstacles.some(obs => checkCollision(potentialPoint, obs));
+                const onContainer = lootContainers.some(con => checkCollision(potentialPoint, con));
+                const inAvoidZone = avoidZones.some(avoid => checkCollision(potentialPoint, avoid));
+
+                if (!onObstacle && !inAvoidZone && !onContainer) {
+                    return { x, y };
+                }
+            }
+            console.error(`Failed to find valid spawn point in zone ${zone}`);
+            return { x: zone.x + zone.width / 2, y: zone.y + zone.height / 2 };
+        }
+
+        function spawnQuestPackage() {
+            const zone = zones.containment;
+            const packagePos = findValidSpawnPoint(zone, 20, 20, [zones.slums, ...safeZones]);
+            if (packagePos) {
+                questPackage = {
+                    ...packagePos,
+                    width: 20,
+                    height: 20,
+                    questId: 'q04_package'
+                };
+            } else {
+                console.error("Failed to spawn quest package for Slick.");
+            }
+        }
+
+        function setupInitialQuests(startWithDebtQuest) {
+            if (startWithDebtQuest) {
+                startQuest('q00_debt');
+            } else {
+                const jake = npcs.find(n => n.id === "npc_jake");
+                if (jake) jake.dialogueId = 'q01_intro';
+                completedQuests.push('q00_debt');
+                startQuest('q01_intro');
+            }
+        }
+
+        function initializePhysicalWorld() {
+            closeAllVendorUIs();
+            
+            const { corporatePlaza: co, construction: cn, containment: cz, slums: sl } = zones;
+            const wallThickness = 40;
+
+            const createZoneWalls = (zone, gap) => {
+                const { x, y, width, height } = zone;
+                const walls = [];
+                walls.push({ x: x, y: y, width: (width - gap) / 2, height: wallThickness });
+                walls.push({ x: x + (width + gap) / 2, y: y, width: (width - gap) / 2, height: wallThickness });
+                walls.push({ x: x, y: y + height - wallThickness, width: (width - gap) / 2, height: wallThickness });
+                walls.push({ x: x + (width + gap) / 2, y: y + height - wallThickness, width: (width - gap) / 2, height: wallThickness });
+                walls.push({ x: x, y: y + wallThickness, width: wallThickness, height: (height - gap) / 2 - wallThickness});
+                walls.push({ x: x, y: y + (height + gap) / 2, width: wallThickness, height: (height - gap) / 2 - wallThickness});
+                walls.push({ x: x + width - wallThickness, y: y + wallThickness, width: wallThickness, height: (height - gap) / 2 - wallThickness });
+                walls.push({ x: x + width - wallThickness, y: y + (height + gap) / 2, width: wallThickness, height: (height - gap) / 2 - wallThickness});
+                return walls;
+            };
+
+            obstacles = [ 
+                { x: 0, y: 0, width: worldWidth, height: 40 },
+                { x: 0, y: worldHeight - 40, width: worldWidth, height: 40 },
+                { x: 0, y: 0, width: 40, height: worldHeight },
+                { x: worldWidth - 40, y: 0, width: 40, height: worldHeight },
+            ];
+            
+            obstacles.push(...createZoneWalls(zones.construction, 200));
+            obstacles.push(...createZoneWalls(zones.containment, 120));
+            obstacles.push(...createZoneWalls(zones.slums, 80));
+            
+            for (let i = 0; i < 100; i++) {
+                const x = zones.construction.x + Math.random() * zones.construction.width;
+                const y = zones.construction.y + Math.random() * zones.construction.height;
+                const width = Math.random() > 0.5 ? 120 : 30;
+                const height = Math.random() > 0.5 ? 30 : 120;
+                const potentialObs = { x, y, width, height };
+                if (!checkCollision(potentialObs, zones.containment)) {
+                    obstacles.push(potentialObs);
+                }
+            }
+
+            obstacles.push(
+                { x: zones.slums.x + 400, y: zones.slums.y + 400, width: 48, height: 48, isTerminal: true }, 
+                { x: zones.containment.x + 200, y: zones.containment.y + 200, width: 48, height: 48, isTerminal: true, loreId: "lore01" }, 
+                { x: zones.containment.x + zones.containment.width - 250, y: zones.containment.y + zones.containment.height - 250, width: 48, height: 48, isTerminal: true, loreId: "lore02" }
+            );
+
+            const cortexTerminalPos = findValidSpawnPoint(zones.construction, 48, 48, [zones.containment]);
+            obstacles.push({ ...cortexTerminalPos, width: 48, height: 48, isTerminal: true, forQuest: 'q03_cortex' });
+            
+            safeZones = [
+                { x: sl.x + 100, y: sl.y + 100, width: 200, height: 200 },
+                { x: zones.construction.x + 50, y: zones.construction.y + 50, width: 150, height: 150 }
+            ];
+            
+            lootContainers = [];
+            for (let i = 0; i < 50; i++) {
+                 const pos = findValidSpawnPoint(zones.construction, 30, 30, [zones.containment, zones.slums, ...safeZones]);
+                 lootContainers.push({ ...pos, width: 30, height: 30, looted: false });
+            }
+            for (let i = 0; i < 20; i++) {
+                 const pos = findValidSpawnPoint(zones.containment, 30, 30, [zones.slums, ...safeZones]);
+                 lootContainers.push({ ...pos, width: 30, height: 30, looted: false });
+            }
+
+            npcs = Object.values(npcDatabase).map(n => ({...n, questState: 'unoffered'}));
+            bullets = []; enemyBullets = []; explosions = []; grenades = []; enemies = [];
+            questPackage = null; // Reset package on new game
+            spawnEnemies();
+        }
+        
+        function spawnEnemies() {
+            enemies = enemies.filter(e => e.type === 'bounty');
+            
+            const spawnInZone = (count, zone, options) => {
+                let spawned = 0;
+                let attempts = 0;
+                while(spawned < count && attempts < 2000) {
+                    attempts++;
+                    const x = zone.x + Math.random() * zone.width;
+                    const y = zone.y + Math.random() * zone.height;
+                    const potentialEnemy = { x, y, width: 40, height: 40 };
+                    
+                    let inSubZone = false;
+                    if (zone === zones.construction && checkCollision(potentialEnemy, zones.containment)) inSubZone = true;
+                    if (zone === zones.containment && checkCollision(potentialEnemy, zones.slums)) inSubZone = true;
+
+                    const inSafeZone = safeZones.some(safe => checkCollision(potentialEnemy, safe));
+                    const onObstacle = obstacles.some(obs => checkCollision(potentialEnemy, obs));
+
+                    if (!inSubZone && !inSafeZone && !onObstacle) {
+                        enemies.push({ ...potentialEnemy, lastShot: 0, lastDir: {x: 1, y: 0}, zone, ...options });
+                        spawned++;
+                    }
+                }
+            };
+
+            spawnInZone(5 + player.level, zones.slums, { health: 100, maxHealth: 100, type: 'grunt', speed: 1 });
+            spawnInZone(10 + player.level * 2, zones.containment, { health: 200, maxHealth: 200, type: 'elite', speed: 1.2 });
+            spawnInZone(20 + player.level * 3, zones.construction, { health: 300, maxHealth: 300, type: 'sentinel', speed: 2, damage: 25 });
+        }
+        
+        function spawnBountyTarget() {
+            const zone = zones.containment;
+            const bountyPos = findValidSpawnPoint(zone, 48, 48, [zones.slums]);
+            
+            if (bountyPos) {
+                enemies.push({
+                    ...bountyPos,
+                    width: 48, height: 48,
+                    health: 500,
+                    maxHealth: 500,
+                    lastShot: 0,
+                    lastDir: {x: 1, y: 0},
+                    type: 'bounty',
+                    speed: 1.5,
+                    zone: zone
+                });
+            } else {
+                console.error("Failed to spawn bounty target. No valid location found.");
+            }
+        }
+
+        function initializeMatrixWorld(context) {
+            gameState = 'matrix-maze';
+            playMusic(Math.floor(Math.random() * 12) + 1);
+            
+            let newMap;
+            if (context === 'q03_cortex' || (activeQuests.find(q=>q.isGlitchQuest) && context === activeQuests.find(q=>q.isGlitchQuest).id)) {
+                newMap = [
+                    [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],
+                    [1,0,0,0,1,2,1,0,0,0,0,1,2,1,0,0,0,1,0,0,2,1,0,1],
+                    [1,1,1,0,1,0,1,0,1,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1],
+                    [1,0,0,0,0,0,0,0,1,2,0,0,0,0,0,1,0,0,0,1,0,0,0,1],
+                    [1,0,1,1,1,1,1,1,1,1,1,1,1,1,0,1,1,1,1,1,1,1,0,1],
+                    [1,0,0,2,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,1],
+                    [1,1,1,1,1,1,0,1,1,1,1,1,2,1,1,1,1,1,1,0,1,1,1,1],
+                    [1,0,0,0,0,1,0,0,0,1,0,0,0,0,0,0,0,0,1,0,1,0,0,1],
+                    [1,2,1,1,0,1,1,1,0,1,0,1,1,1,1,1,1,0,1,0,1,0,1,1],
+                    [1,0,0,1,0,0,0,1,0,1,0,0,0,1,0,0,0,0,1,0,0,0,0,1],
+                    [1,0,1,1,1,1,0,1,0,1,1,1,0,1,0,1,1,1,1,1,1,1,0,1],
+                    [1,0,0,0,0,1,0,1,0,0,2,1,0,1,0,1,0,0,0,0,0,0,0,1],
+                    [1,1,1,1,0,1,0,1,1,1,1,1,0,1,1,1,0,1,1,1,1,1,0,1],
+                    [1,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,3,0,1],
+                    [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]
+                ];
+            } else {
+                newMap = [ [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1], [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1], [1,0,1,1,1,1,0,1,1,1,1,1,1,1,1,1,1,1,0,1,1,1,0,1], [1,0,1,2,1,1,0,1,0,0,0,0,0,0,0,2,0,1,0,1,0,0,0,1], [1,0,1,0,3,1,0,1,0,1,1,1,1,1,1,1,0,1,0,1,0,1,0,1], [1,0,0,0,0,0,0,2,0,1,0,0,0,0,0,1,0,0,0,0,0,1,0,1], [1,0,1,1,1,1,0,1,0,1,0,1,1,1,1,1,0,1,1,1,1,1,0,1], [1,0,0,0,0,1,0,1,0,0,0,1,0,0,0,0,0,1,0,0,0,0,0,1], [1,1,1,1,0,1,1,1,1,1,0,1,0,1,1,2,1,1,0,1,1,1,1,1], [1,0,0,0,0,0,0,0,0,1,0,0,0,1,0,0,0,0,0,0,0,0,0,1], [1,0,1,1,1,1,1,1,0,1,1,1,1,1,0,1,1,1,1,1,1,1,0,1], [1,0,0,0,0,0,0,1,0,0,0,0,2,0,0,1,0,0,0,0,0,0,0,1], [1,0,1,1,0,1,0,1,1,1,1,1,1,1,1,1,0,1,1,1,1,1,0,1], [1,0,1,0,0,1,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,1,0,1], [1,2,1,0,1,1,1,1,1,1,0,1,1,1,1,1,0,1,0,1,0,1,2,1], [1,0,0,0,0,0,0,0,0,6,0,0,0,0,0,0,0,0,0,6,0,0,0,1], [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1] ];
+                if (context !== 'q01_intro') {
+                    for(let y = 0; y < newMap.length; y++) for(let x = 0; x < newMap[y].length; x++) if (newMap[y][x] === 3) newMap[y][x] = 0;
+                }
+            }
+            
+            matrixMap = JSON.parse(JSON.stringify(newMap));
+            matrixPlayer.x = 1.5; matrixPlayer.y = 1.5;
+            matrixPlayer.dirX = 1; matrixPlayer.dirY = 0;
+            matrixPlayer.planeX = 0; matrixPlayer.planeY = 0.66;
+        }
+
+        // --- Main Game Loop & Updates ---
+        function gameLoop() {
+            if (gameState === 'intro' || gameState === 'jacking-in' || gameState === 'cutscene') {
+                requestAnimationFrame(gameLoop); // Keep the loop going but don't update/draw game
+                return; 
+            }
+            
+            if (player.health <= 0 && gameState !== 'gameover') {
+                handlePlayerDeath();
+            }
+            
+            const isPaused = ['menu', 'vendor', 'dialog', 'battle', 'gameover'].includes(gameState);
+
+            if (!isPaused) {
+                update();
+            }
+            
+            draw();
+            
+            requestAnimationFrame(gameLoop);
+        }
+        function update() {
+            if (gameState === 'physical') updatePhysical(); 
+            else if (gameState === 'matrix-maze') updateMatrixMaze();
+        }
+        function draw() {
+            if (!elements.ctx) return;
+            elements.ctx.clearRect(0, 0, elements.canvas.width, elements.canvas.height);
+            if (['physical', 'vendor', 'dialog', 'menu'].includes(gameState)) drawPhysical(); 
+            else if (gameState === 'matrix-maze') drawMatrixMaze(); 
+            
+            if (gameState !== 'gameover') {
+                elements.healthBar.style.width = `${(player.health / player.maxHealth) * 100}%`;
+                elements.xpBar.style.width = `${(player.xp / player.xpToNextLevel) * 100}%`;
+                elements.level.textContent = `LVL: ${player.level}`;
+                elements.nuyen.textContent = `${player.nuyen}¥`;
+                elements.weaponDisplay.textContent = `${player.activeWeapon.toUpperCase().replace('_', ' ')} | GRENADES: ${player.grenades}`;
+            }
+        }
+        function moveEntity(entity, velX, velY) {
+            entity.x += velX;
+            for (const o of obstacles) {
+                if (checkCollision(entity, o)) {
+                    if (velX > 0) entity.x = o.x - entity.width;
+                    else if (velX < 0) entity.x = o.x + o.width;
+                    break;
+                }
+            }
+
+            entity.y += velY;
+            for (const o of obstacles) {
+                if (checkCollision(entity, o)) {
+                    if (velY > 0) entity.y = o.y - entity.height;
+                    else if (velY < 0) entity.y = o.y + o.height;
+                    break;
+                }
+            }
+        }
+        function updatePhysical() {
+            if(keys['1']) player.activeWeapon = 'pistol';
+            if(keys['2'] && player.weapons.includes('shotgun')) player.activeWeapon = 'shotgun';
+            if(keys['3'] && player.weapons.includes('machine_gun')) player.activeWeapon = 'machine_gun';
+            if(keys['4'] && player.weapons.includes('railgun')) player.activeWeapon = 'railgun';
+            isAimingGrenade = keys['g'] && player.grenades > 0;
+            
+            if (keys['c']) {
+                player.isStealthed = !player.isStealthed;
+                player.speed = player.isStealthed ? player.baseSpeed * 0.6 : player.baseSpeed;
+                showMessage(player.isStealthed ? "Stealth Mode Engaged" : "Stealth Mode Disengaged", 1500);
+                keys['c'] = false;
+            }
+
+            const playerInSafeZone = isInSafeZone(player);
+            let moveX = (keys['d'] ? 1 : 0) - (keys['a'] ? 1 : 0);
+            let moveY = (keys['s'] ? 1 : 0) - (keys['w'] ? 1 : 0);
+            if (moveX !== 0 || moveY !== 0) {
+                const mag = Math.sqrt(moveX*moveX + moveY*moveY);
+                const velX = (moveX / mag) * player.speed;
+                const velY = (moveY / mag) * player.speed;
+                moveEntity(player, velX, velY);
+                player.lastDir = { x: velX, y: velY };
+            }
+            player.x = Math.max(0, Math.min(worldWidth - player.width, player.x));
+            player.y = Math.max(0, Math.min(worldHeight - player.height, player.y));
+            
+            const weapon = weaponStats[player.activeWeapon];
+            let shootX = (keys['arrowright'] ? 1 : 0) - (keys['arrowleft'] ? 1 : 0);
+            let shootY = (keys['arrowdown'] ? 1 : 0) - (keys['arrowup'] ? 1 : 0);
+            if (!playerInSafeZone && !isAimingGrenade && (shootX !== 0 || shootY !== 0) && Date.now() - lastShotTime > weapon.fireRate) {
+                lastShotTime = Date.now();
+                fireWeapon(shootX, shootY);
+            }
+            
+            updateBullets(bullets, enemies, 'player'); updateBullets(enemyBullets, [player], 'enemy');
+            updateGrenades(); updateExplosions();
+            updateLoot();
+            
+            enemies.forEach(e => {
+                if (isInSafeZone(e)) return;
+                const dx = player.x - e.x, dy = player.y - e.y;
+                const dist = Math.sqrt(dx*dx + dy*dy);
+                
+                const detectionRange = player.isStealthed ? 150 : 500;
+
+                if (dist < detectionRange) { 
+                    const moveSpeed = e.speed || 1;
+                    const velX = (dx/dist) * moveSpeed;
+                    const velY = (dy/dist) * moveSpeed;
+                    
+                    moveEntity(e, velX, velY);
+                    e.lastDir = { x: velX, y: velY };
+
+                    e.x = Math.max(e.zone.x, Math.min(e.zone.x + e.zone.width - e.width, e.x));
+                    e.y = Math.max(e.zone.y, Math.min(e.zone.y + e.zone.height - e.height, e.y));
+
+                    if (!playerInSafeZone && Date.now() - e.lastShot > (e.type === 'elite' ? 1000 : 1500)) {
+                        e.lastShot = Date.now();
+                        const angle = Math.atan2(dy, dx), snappedAngle = Math.round(angle / (Math.PI / 4)) * (Math.PI / 4);
+                        enemyBullets.push({x: e.x+20, y: e.y+20, width:6, height:6, dx: Math.cos(snappedAngle) * 4, dy: Math.sin(snappedAngle) * 4, damage: e.damage || (e.type === 'elite' ? 20 : 10)});
+                    }
+                }
+            });
+
+            if (keys['e']) {
+                const interactionRadius = player.width + 20; let interacted = false;
+                
+                if (player.isStealthed) {
+                    for (let i = enemies.length - 1; i >= 0; i--) {
+                        const enemy = enemies[i];
+                        const dist = Math.sqrt(Math.pow(player.x - enemy.x, 2) + Math.pow(player.y - enemy.y, 2));
+                        
+                        const playerToEnemy = { x: enemy.x - player.x, y: enemy.y - player.y };
+                        const dotProduct = (playerToEnemy.x * enemy.lastDir.x) + (playerToEnemy.y * enemy.lastDir.y);
+
+                        if (dist < 40 && dotProduct < 0) { 
+                            showMessage("Silent Takedown!", 1500);
+                            giveXP(50);
+                            enemies.splice(i, 1);
+                            interacted = true;
+                            break;
+                        }
+                    }
+                }
+
+                // --- FIX: Added logic to pick up the quest package ---
+                if (!interacted && questPackage && checkCollision(player, questPackage)) {
+                    const quest = activeQuests.find(q => q.id === questPackage.questId);
+                    if (quest) {
+                        interacted = true;
+                        quest.progress = 1;
+                        quest.objective = "Return the package to Slick.";
+                        questPackage = null;
+                        updateQuestDisplay();
+                        showMessage("Package retrieved.", 2000);
+                    }
+                }
+
+                if (!interacted) {
+                    lootContainers.forEach(c => {
+                        if (interacted || c.looted) return;
+                        const dist = Math.sqrt(Math.pow(player.x + player.width/2 - (c.x + c.width/2), 2) + Math.pow(player.y + player.height/2 - (c.y + c.height/2), 2));
+                        if (dist < interactionRadius) {
+                            c.looted = true;
+                            interacted = true;
+                            const lootType = Math.random();
+                            if (lootType < 0.6) {
+                                const amount = Math.floor(Math.random() * 50) + 10;
+                                player.nuyen += amount;
+                                showMessage(`Found ${amount}¥`, 1500);
+                            } else if (lootType < 0.85) {
+                                player.grenades += 1;
+                                showMessage(`Found a grenade`, 1500);
+                            } else {
+                                player.health = Math.min(player.maxHealth, player.health + 25);
+                                showMessage(`Found a health pack`, 1500);
+                            }
+                        }
+                    });
+                }
+
+                if(!interacted) {
+                    for (let i = obstacles.length - 1; i >= 0; i--) {
+                        const o = obstacles[i];
+                        if(interacted) break;
+                        const dist = Math.sqrt(Math.pow(player.x + player.width/2 - (o.x + o.width/2), 2) + Math.pow(player.y + player.height/2 - (o.y + o.height/2), 2));
+                        if (o.isTerminal && dist < interactionRadius) {
+                            interacted = true;
+                            const sabotageQuest = activeQuests.find(q => q.id === 'q05_sabotage' && !q.completed);
+                            if (o.questId === 'q05_sabotage' && sabotageQuest) {
+                                sabotageQuest.progress++;
+                                showMessage(`Terminal destroyed (${sabotageQuest.progress}/3).`, 2000);
+                                obstacles.splice(i, 1); // Remove the terminal
+                                if (sabotageQuest.progress >= 3) {
+                                    sabotageQuest.objective = "Return to Anya.";
+                                }
+                                updateQuestDisplay();
+                            } else {
+                                const quest = activeQuests.find(q => q.id === o.forQuest && !q.completed);
+                                const introQuest = activeQuests.find(q => q.id === 'q01_intro' && !q.completed);
+                                const glitchQuest = activeQuests.find(q => q.isGlitchQuest && !q.completed);
+                                
+                                const startJackIn = (context) => {
+                                    gameState = 'jacking-in';
+                                    startTerminalJackingAnimation(() => {
+                                        initializeMatrixWorld(context);
+                                    });
+                                };
+
+                                if (o.forQuest) {
+                                    if (quest) {
+                                        startJackIn(o.forQuest);
+                                    } else {
+                                        showMessage('Access Denied. No active job for this node.', 2000);
+                                    }
+                                } else if (introQuest) {
+                                    startJackIn('q01_intro');
+                                } else if (glitchQuest) {
+                                    startJackIn(glitchQuest.id);
+                                } else if (o.loreId) {
+                                    showMessage(loreDatabase[o.loreId], 5000);
+                                } else {
+                                    startJackIn();
+                                }
+                            }
+                        }
+                    }
+                }
+                if(!interacted) {
+                    npcs.forEach(npc => {
+                        if(interacted) return;
+                        const dist = Math.sqrt(Math.pow(player.x + player.width/2 - (npc.x + npc.width/2), 2) + Math.pow(player.y + player.height/2 - (npc.y + npc.height/2), 2));
+                        if (dist < interactionRadius) { startDialogue(npc); interacted = true; }
+                    });
+                }
+                if(!interacted && isInSafeZone(player)) { openVendor(); interacted = true;}
+                keys['e'] = false;
+            }
+
+            camera.x = player.x - elements.canvas.width / 2;
+            camera.y = player.y - elements.canvas.height / 2;
+            camera.x = Math.max(0, Math.min(worldWidth - elements.canvas.width, camera.x));
+            camera.y = Math.max(0, Math.min(worldHeight - elements.canvas.height, camera.y));
+        }
+
+        function fireWeapon(shootX, shootY) {
+            const weapon = weaponStats[player.activeWeapon]; const mag = Math.sqrt(shootX*shootX + shootY*shootY);
+            const baseSpread = weapon.spread || 0;
+            const finalSpread = baseSpread - player.accuracyBonus;
+            const baseDX = (shootX/mag) * 8, baseDY = (shootY/mag) * 8;
+            const startX = player.x + player.width / 2, startY = player.y + player.height / 2;
+            
+            switch(player.activeWeapon) {
+                case 'pistol': 
+                    bullets.push({ x: startX, y: startY, width: 8, height: 6, dx: baseDX, dy: baseDY, damage: weapon.damage }); 
+                    break;
+                case 'shotgun': 
+                    for(let i = 0; i < weapon.pellets; i++) { 
+                        const angle = Math.atan2(baseDY, baseDX) + (Math.random() - 0.5) * finalSpread; 
+                        bullets.push({ x: startX, y: startY, width: 6, height: 4, dx: Math.cos(angle) * 8, dy: Math.sin(angle) * 8, damage: weapon.damage }); 
+                    } 
+                    break;
+                case 'machine_gun': 
+                    const angle = Math.atan2(baseDY, baseDX) + (Math.random() - 0.5) * finalSpread; 
+                    bullets.push({ x: startX, y: startY, width: 8, height: 6, dx: Math.cos(angle) * 9, dy: Math.sin(angle) * 9, damage: weapon.damage }); 
+                    break;
+                case 'railgun': 
+                    bullets.push({ x: startX, y: startY, width: 10, height: 10, dx: baseDX * 2, dy: baseDY * 2, damage: weapon.damage, piercing: true, life: 100 }); 
+                    break;
+            }
+        }
+        function updateBullets(bulletArr, targetArr, type) {
+             for (let i = bulletArr.length - 1; i >= 0; i--) {
+                  const b = bulletArr[i]; b.x += b.dx; b.y += b.dy;
+                  if (b.life) b.life--; let hitSomething = false;
+                  if (obstacles.some(o => !o.isTerminal && checkCollision(b, o))) { if (!b.piercing) hitSomething = true; }
+                  for (let j = targetArr.length - 1; j >= 0; j--) {
+                      if (checkCollision(b, targetArr[j])) {
+                          targetArr[j].health -= b.damage || 10;
+                          if (targetArr[j].health <= 0) {
+                              if (type === 'player') { 
+                                  const deadEnemy = targetArr[j];
+                                  giveXP(deadEnemy.type === 'elite' ? 50 : (deadEnemy.type === 'sentinel' ? 150 : 20)); 
+                                  player.nuyen += deadEnemy.type === 'elite' ? 25 : (deadEnemy.type === 'sentinel' ? 100 : 10);
+                                  
+                                  if (Math.random() < 0.5) {
+                                      if (Math.random() < 0.2) {
+                                          lootItems.push({ x: deadEnemy.x, y: deadEnemy.y, type: 'health', width: 16, height: 16 });
+                                      } else {
+                                          lootItems.push({ x: deadEnemy.x, y: deadEnemy.y, type: 'nuyen', amount: Math.floor(Math.random() * 20) + 5, width: 12, height: 12 });
+                                      }
+                                  }
+
+                                  if (deadEnemy.type === 'bounty') {
+                                      const bountyQuest = activeQuests.find(q => q.id === 'q02_bounty');
+                                      if (bountyQuest) {
+                                          completeQuest('q02_bounty');
+                                      }
+                                  }
+
+                                  targetArr.splice(j, 1); 
+                              } 
+                              else { 
+                                  player.health = 0;
+                              }
+                          }
+                          if (!b.piercing) { hitSomething = true; break; }
+                      }
+                  }
+                  if (hitSomething || (b.life && b.life <= 0) || b.x < 0 || b.x > worldWidth || b.y < 0 || b.y > worldHeight) { bulletArr.splice(i, 1); }
+              }
+         }
+        function updateGrenades() {
+            for(let i = grenades.length - 1; i >= 0; i--) {
+                const g = grenades[i]; g.x += g.dx; g.y += g.dy; g.dx *= 0.98; g.dy *= 0.98; g.timer--;
+                if(g.timer <= 0) { explosions.push({ x: g.x, y: g.y, radius: 100, life: 30, damagedEnemies: [] }); grenades.splice(i,1); }
+            }
+        }
+        function updateExplosions() {
+             for(let i = explosions.length - 1; i >= 0; i--) {
+                  const e = explosions[i]; e.life--;
+                  enemies.forEach(enemy => {
+                      if(e.damagedEnemies.includes(enemy)) return;
+                      const dist = Math.sqrt(Math.pow(enemy.x + enemy.width/2 - e.x, 2) + Math.pow(enemy.y + enemy.height/2 - e.y, 2));
+                      if(dist < e.radius) {
+                          enemy.health -= 80; e.damagedEnemies.push(enemy);
+                          if(enemy.health <= 0) { 
+                              const enemyIndex = enemies.indexOf(enemy); 
+                              if(enemyIndex > -1) { 
+                                  giveXP(enemy.type === 'elite' ? 50 : (enemy.type === 'sentinel' ? 150 : 20)); 
+                                  player.nuyen += enemy.type === 'elite' ? 25 : (enemy.type === 'sentinel' ? 100 : 10);
+                                  enemies.splice(enemyIndex, 1); 
+                              } 
+                          }
+                      }
+                  });
+                  if(e.life <= 0) { explosions.splice(i, 1); }
+              }
+         }
+        function updateLoot() {
+            for (let i = lootItems.length - 1; i >= 0; i--) {
+                const item = lootItems[i];
+                if (checkCollision(player, item)) {
+                    if (item.type === 'nuyen') {
+                        player.nuyen += item.amount;
+                        showMessage(`+${item.amount}¥`, 1000);
+                    } else if (item.type === 'health') {
+                        player.health = Math.min(player.maxHealth, player.health + 25);
+                        showMessage(`+25 Health`, 1000);
+                    }
+                    lootItems.splice(i, 1);
+                }
+            }
+        }
+        function updateMatrixMaze() {
+            const moveSpeed = matrixPlayer.moveSpeed, rotSpeed = matrixPlayer.rotSpeed;
+            if (keys['arrowleft']) { const oldDirX = matrixPlayer.dirX; matrixPlayer.dirX = matrixPlayer.dirX * Math.cos(-rotSpeed) - matrixPlayer.dirY * Math.sin(-rotSpeed); matrixPlayer.dirY = oldDirX * Math.sin(-rotSpeed) + matrixPlayer.dirY * Math.cos(-rotSpeed); const oldPlaneX = matrixPlayer.planeX; matrixPlayer.planeX = matrixPlayer.planeX * Math.cos(-rotSpeed) - matrixPlayer.planeY * Math.sin(-rotSpeed); matrixPlayer.planeY = oldPlaneX * Math.sin(-rotSpeed) + matrixPlayer.planeY * Math.cos(-rotSpeed); }
+            if (keys['arrowright']) { const oldDirX = matrixPlayer.dirX; matrixPlayer.dirX = matrixPlayer.dirX * Math.cos(rotSpeed) - matrixPlayer.dirY * Math.sin(rotSpeed); matrixPlayer.dirY = oldDirX * Math.sin(rotSpeed) + matrixPlayer.dirY * Math.cos(rotSpeed); const oldPlaneX = matrixPlayer.planeX; matrixPlayer.planeX = matrixPlayer.planeX * Math.cos(rotSpeed) - matrixPlayer.planeY * Math.sin(rotSpeed); matrixPlayer.planeY = oldPlaneX * Math.sin(rotSpeed) + matrixPlayer.planeY * Math.cos(rotSpeed); }
+            let moveX = 0, moveY = 0;
+            if (keys['w']) { moveX += matrixPlayer.dirX; moveY += matrixPlayer.dirY; }
+            if (keys['s']) { moveX -= matrixPlayer.dirX; moveY -= matrixPlayer.dirY; }
+            if (keys['d']) { moveX += matrixPlayer.planeX; moveY += matrixPlayer.planeY; }
+            if (keys['a']) { moveX -= matrixPlayer.planeX; moveY -= matrixPlayer.planeY; }
+            if (moveX !== 0 || moveY !== 0) {
+                const mag = Math.sqrt(moveX*moveX + moveY*moveY);
+                const dx = (moveX / mag) * moveSpeed, dy = (moveY / mag) * moveSpeed;
+                const nextX = matrixPlayer.x + dx, nextY = matrixPlayer.y + dy, mapNextX = Math.floor(nextX), mapNextY = Math.floor(nextY);
+                if (matrixMap[mapNextY]?.[mapNextX] === 2) { startNewBattle(mapNextX, mapNextY); return; }
+                if (matrixMap[Math.floor(matrixPlayer.y)][mapNextX] === 0) matrixPlayer.x = nextX;
+                if (matrixMap[mapNextY]?.[Math.floor(matrixPlayer.x)] === 0) matrixPlayer.y = nextY;
+            }
+            if (keys['e']) {
+                const checkX = Math.floor(matrixPlayer.x + matrixPlayer.dirX * 0.6), checkY = Math.floor(matrixPlayer.y + matrixPlayer.dirY * 0.6);
+                if (matrixMap[checkY]?.[checkX] === 3) {
+                    const introQuest = activeQuests.find(q => q.id === 'q01_intro' && !q.completed);
+                    const cortexQuest = activeQuests.find(q => q.id === 'q03_cortex' && !q.completed);
+                    const glitchQuest = activeQuests.find(q => q.isGlitchQuest && !q.completed);
+
+                    if (introQuest) {
+                        introQuest.progress = 1;
+                        introQuest.objective = "Return the datastick to Jake Armitage.";
+                        updateQuestDisplay();
+                        showMessage('Datastick acquired! Jacking out...', 2000);
+                        setTimeout(() => returnToPhysicalWorld(), 2000);
+                    } else if (cortexQuest) {
+                        cortexQuest.progress = 1;
+                        cortexQuest.objective = "Return the schematics to Cortex.";
+                        updateQuestDisplay();
+                        showMessage('Prototype schematics acquired! Jacking out...', 2000);
+                        setTimeout(() => returnToPhysicalWorld(), 2000);
+                    } else if (glitchQuest) {
+                        glitchQuest.progress = 1;
+                        glitchQuest.objective = `Return to Glitch with the ${glitchQuest.title} data.`;
+                        updateQuestDisplay();
+                        showMessage('Objective complete. Jacking out...', 2000);
+                        setTimeout(() => returnToPhysicalWorld(), 2000);
+                    }
+                }
+                keys['e'] = false;
+            }
+            if (keys['q']) { returnToPhysicalWorld(); showMessage('Jacking out...', 1500); keys['q'] = false; }
+            elements.controls.innerHTML = `[WASD] Move | [Arrows] Look | [E] Interact | [Q] Jack Out`;
+        }
+        function drawPhysical() {
+            elements.ctx.save();
+            elements.ctx.translate(-camera.x, -camera.y);
+
+            elements.ctx.fillStyle = elements.ctx.createPattern(corporateBg, 'repeat');
+            elements.ctx.fillRect(zones.corporatePlaza.x, zones.corporatePlaza.y, zones.corporatePlaza.width, zones.corporatePlaza.height);
+            elements.ctx.fillStyle = elements.ctx.createPattern(constructionBg, 'repeat');
+            elements.ctx.fillRect(zones.construction.x, zones.construction.y, zones.construction.width, zones.construction.height);
+            elements.ctx.fillStyle = elements.ctx.createPattern(containmentBg, 'repeat');
+            elements.ctx.fillRect(zones.containment.x, zones.containment.y, zones.containment.width, zones.containment.height);
+            elements.ctx.fillStyle = elements.ctx.createPattern(physicalBg, 'repeat');
+            elements.ctx.fillRect(zones.slums.x, zones.slums.y, zones.slums.width, zones.slums.height);
+            
+            lootContainers.forEach(c => {
+                const asset = c.looted ? assets.lootContainerOpen : assets.lootContainer;
+                elements.ctx.drawImage(asset, c.x, c.y, c.width, c.height);
+            });
+
+            lootItems.forEach(item => {
+                const asset = item.type === 'nuyen' ? assets.nuyenDrop : assets.healthDrop;
+                elements.ctx.drawImage(asset, item.x, item.y);
+            });
+
+            if (questPackage) {
+                elements.ctx.drawImage(assets.questPackage, questPackage.x, questPackage.y);
+            }
+
+            obstacles.forEach(o => {
+                if (o.isTerminal) {
+                    elements.ctx.drawImage(assets.terminal, o.x, o.y, o.width, o.height);
+                } else {
+                    elements.ctx.drawImage(assets.obstacle, o.x, o.y, o.width, o.height);
+                }
+            });
+            npcs.forEach(n => {
+                let asset;
+                switch(n.id) {
+                    case 'npc_glitch': asset = assets.glitch; break;
+                    case 'npc_cortex': asset = assets.cortexNpc; break;
+                    case 'npc_slick': asset = assets.slick; break;
+                    case 'npc_anya': asset = assets.anya; break;
+                    default: asset = assets.npc;
+                }
+                elements.ctx.drawImage(asset, n.x, n.y, n.width, n.height);
+            });
+            grenades.forEach(g => { elements.ctx.fillStyle = 'darkgreen'; elements.ctx.fillRect(g.x, g.y, 10, 10); });
+            bullets.forEach(b => { if(b.piercing) { elements.ctx.strokeStyle = 'cyan'; elements.ctx.lineWidth = 4; elements.ctx.beginPath(); elements.ctx.moveTo(b.x - b.dx, b.y - b.dy); elements.ctx.lineTo(b.x, b.y); elements.ctx.stroke(); } else { elements.ctx.drawImage(assets.playerBullet, b.x, b.y); } });
+            enemyBullets.forEach(b => elements.ctx.drawImage(assets.enemyBullet, b.x, b.y));
+            explosions.forEach(e => { elements.ctx.fillStyle = `rgba(255, 165, 0, ${e.life / 30 * 0.7})`; elements.ctx.beginPath(); elements.ctx.arc(e.x, e.y, e.radius, 0, Math.PI * 2); elements.ctx.fill(); });
+            enemies.forEach(e => {
+                let asset;
+                switch(e.type) {
+                    case 'grunt': asset = assets.enemy; break;
+                    case 'elite': asset = assets.elite; break;
+                    case 'bounty': asset = assets.bounty; break;
+                    case 'sentinel': asset = assets.sentinel; break;
+                    default: asset = assets.enemy;
+                }
+                elements.ctx.drawImage(asset, e.x, e.y, e.width, e.height);
+                if (e.health < e.maxHealth) { 
+                    elements.ctx.fillStyle = '#2d3436'; 
+                    elements.ctx.fillRect(e.x, e.y - 10, e.width, 5); 
+                    elements.ctx.fillStyle = e.type === 'bounty' ? '#e84393' : (e.type === 'elite' ? '#f39c12' : '#ff4136'); 
+                    elements.ctx.fillRect(e.x, e.y - 10, e.width * (e.health/e.maxHealth), 5); 
+                }
+            });
+
+            elements.ctx.save();
+            if (player.isStealthed) {
+                elements.ctx.globalAlpha = 0.6;
+            }
+            elements.ctx.drawImage(assets.player, player.x, player.y, player.width, player.height);
+            elements.ctx.restore();
+
+            if(isAimingGrenade) {
+                const shootX = (keys['arrowright'] ? 1 : 0) - (keys['arrowleft'] ? 1 : 0); const shootY = (keys['arrowdown'] ? 1 : 0) - (keys['arrowup'] ? 1 : 0);
+                const dirX = (shootX === 0 && shootY === 0) ? 1 : shootX; const dirY = shootY; const mag = Math.sqrt(dirX*dirX + dirY*dirY);
+                elements.ctx.strokeStyle = "rgba(255,0,0,0.5)"; elements.ctx.lineWidth = 2; elements.ctx.beginPath();
+                elements.ctx.moveTo(player.x + player.width/2, player.y + player.height/2);
+                elements.ctx.lineTo(player.x + player.width/2 + (dirX/mag) * 150, player.y + player.height/2 + (dirY/mag) * 150);
+                elements.ctx.stroke();
+            }
+            elements.ctx.restore();
+            elements.controls.innerHTML = `[WASD] Move | [Arrows] Shoot | [C] Stealth | [G] Aim Grenade | [E] Interact | [1-4] Switch Weapon | [R] Status`;
+        }
+        function drawMatrixMaze() {
+            const screenWidth = elements.canvas.width;
+            const screenHeight = elements.canvas.height;
+            const halfHeight = screenHeight / 2;
+
+            elements.ctx.fillStyle = "#1a1a1a"; elements.ctx.fillRect(0, 0, screenWidth, halfHeight);
+            elements.ctx.fillStyle = "#333333"; elements.ctx.fillRect(0, halfHeight, screenWidth, halfHeight);
+            
+            for(let x = 0; x < screenWidth; x++) {
+                const cameraX = 2 * x / screenWidth - 1;
+                const rayDirX = matrixPlayer.dirX + matrixPlayer.planeX * cameraX;
+                const rayDirY = matrixPlayer.dirY + matrixPlayer.planeY * cameraX;
+                
+                let mapX = Math.floor(matrixPlayer.x);
+                let mapY = Math.floor(matrixPlayer.y);
+                
+                const deltaDistX = (rayDirX === 0) ? 1e30 : Math.abs(1 / rayDirX);
+                const deltaDistY = (rayDirY === 0) ? 1e30 : Math.abs(1 / rayDirY);
+                
+                let perpWallDist;
+                let stepX, stepY;
+                let hit = 0;
+                let side;
+                let sideDistX, sideDistY;
+
+                if (rayDirX < 0) { stepX = -1; sideDistX = (matrixPlayer.x - mapX) * deltaDistX; } 
+                else { stepX = 1; sideDistX = (mapX + 1.0 - matrixPlayer.x) * deltaDistX; }
+                if (rayDirY < 0) { stepY = -1; sideDistY = (matrixPlayer.y - mapY) * deltaDistY; } 
+                else { stepY = 1; sideDistY = (mapY + 1.0 - matrixPlayer.y) * deltaDistY; }
+                
+                while (hit == 0) {
+                    if (sideDistX < sideDistY) { sideDistX += deltaDistX; mapX += stepX; side = 0; } 
+                    else { sideDistY += deltaDistY; mapY += stepY; side = 1; }
+                    if (matrixMap[mapY]?.[mapX] > 0) hit = 1;
+                }
+                
+                if (side == 0) perpWallDist = (sideDistX - deltaDistX);
+                else perpWallDist = (sideDistY - deltaDistY);
+                
+                const lineHeight = Math.floor(screenHeight / perpWallDist);
+                let drawStart = -lineHeight / 2 + halfHeight;
+                if(drawStart < 0) drawStart = 0;
+                let drawEnd = lineHeight / 2 + halfHeight;
+                if(drawEnd >= screenHeight) drawEnd = screenHeight - 1;
+                
+                let color;
+                switch(matrixMap[mapY][mapX]) { 
+                    case 1: color = "#00ffff"; break; 
+                    case 2: color = "#ff00ff"; break; 
+                    case 3: color = "#f1c40f"; break; 
+                }
+                if (side == 1) color = shadeColor(color, -25);
+                
+                elements.ctx.strokeStyle = color; 
+                elements.ctx.beginPath(); 
+                elements.ctx.moveTo(x, drawStart); 
+                elements.ctx.lineTo(x, drawEnd); 
+                elements.ctx.stroke();
+            }
+        }
+        // --- Game Over & Util Functions ---
+        function handlePlayerDeath() {
+            lastSafeState = {
+                x: player.x,
+                y: player.y,
+                gameStateBeforeDeath: gameState,
+                matrixPlayerX: matrixPlayer.x,
+                matrixPlayerY: matrixPlayer.y,
+            };
+
+            gameState = 'gameover';
+            elements.rpgBattleContainer.style.display = 'none';
+            elements.gameOverScreen.style.display = 'flex';
+
+            const continueButton = elements.continueButton;
+            const restartMessage = elements.gameOverScreen.querySelector('.restart-message');
+
+            if (player.nuyen >= 1000) {
+                continueButton.disabled = false;
+                restartMessage.style.display = 'none';
+            } else {
+                continueButton.disabled = true;
+                restartMessage.style.display = 'block';
+            }
+        }
+
+        function continueGame() {
+            if (player.nuyen < 1000) return;
+
+            player.nuyen -= 1000;
+            player.health = player.maxHealth;
+
+            if (lastSafeState.gameStateBeforeDeath === 'battle' || lastSafeState.gameStateBeforeDeath === 'matrix-maze') {
+                gameState = 'matrix-maze';
+                matrixPlayer.x = lastSafeState.matrixPlayerX;
+                matrixPlayer.y = lastSafeState.matrixPlayerY;
+            } else {
+                gameState = 'physical';
+                player.x = lastSafeState.x;
+                player.y = lastSafeState.y;
+            }
+            
+            elements.gameOverScreen.style.display = 'none';
+        }
+
+        function toggleFullscreen() { if (!document.fullscreenElement) { document.documentElement.requestFullscreen().catch(err => { console.error(`Error: ${err.message} (${err.name})`); }); } else { document.exitFullscreen(); } }
+        function checkCollision(r1, r2) { return r1.x < r2.x + r2.width && r1.x + r1.width > r2.x && r1.y < r2.y + r2.height && r1.y + r1.height > r2.y; }
+        function isInSafeZone(entity) { return safeZones.some(zone => checkCollision(entity, zone)); }
+        function showMessage(text, duration = 2000) { elements.messageBox.textContent = text; elements.messageBox.style.opacity = '1'; clearTimeout(messageTimeout); messageTimeout = setTimeout(() => { elements.messageBox.style.opacity = '0'; }, duration); }
+        function shadeColor(color, percent) { let R = parseInt(color.substring(1,3),16), G = parseInt(color.substring(3,5),16), B = parseInt(color.substring(5,7),16); R = parseInt(R * (100 + percent) / 100); G = parseInt(G * (100 + percent) / 100); B = parseInt(B * (100 + percent) / 100); R = (R<255)?R:255; G = (G<255)?G:255; B = (B<255)?B:255; return "#"+(0x1000000+R*0x10000+G*0x100+B).toString(16).slice(1); }
+
+        function playMusic(track) {
+            const allTracks = Object.values(elements).filter(el => el instanceof HTMLAudioElement && el.id.startsWith('bgm'));
+            allTracks.forEach(bgm => { if (bgm) bgm.pause(); });
+
+            if (track >= 1 && track <= allTracks.length) {
+                const selectedTrack = allTracks[track - 1];
+                currentTrackIndex = track - 1;
+                if (selectedTrack) {
+                    selectedTrack.currentTime = 0;
+                    selectedTrack.play().catch(e => console.error(`Audio play failed for track ${track}.`, e));
+                }
+            }
+        }
+
+        function playNextTrack() {
+            const allTracks = Object.values(elements).filter(el => el instanceof HTMLAudioElement && el.id.startsWith('bgm'));
+            currentTrackIndex = (currentTrackIndex + 1) % allTracks.length;
+            playMusic(currentTrackIndex + 1);
+        }
+
+        function startMusicIfNeeded(force = false) {
+            if (force && musicHasStarted) {
+                 playNextTrack();
+            } else if (!musicHasStarted) {
+                musicHasStarted = true;
+                playMusic(Math.floor(Math.random() * 12) + 1);
+            }
+        }
+        
+        // --- Cutscene Management ---
+        let cutsceneState = {
+            currentSceneIndex: 0,
+            scenes: [],
+            container: null,
+            onCompleteCallback: null,
+            audio: null,
+            active: false
+        };
+
+        function playCutscene(container, audio, onCompleteCallback) {
+            if (cutsceneState.active) return;
+            cutsceneState.active = true;
+
+            previousGameState = gameState;
+            gameState = 'cutscene';
+            cutsceneState.container = container;
+            cutsceneState.onCompleteCallback = onCompleteCallback;
+            cutsceneState.audio = audio;
+            
+            const allBgmTracks = Object.values(elements).filter(el => el instanceof HTMLAudioElement && el.id.startsWith('bgm'));
+            allBgmTracks.forEach(bgm => { if (bgm) bgm.pause(); });
+
+            if (audio) {
+                audio.volume = isMuted ? 0 : lastVolume;
+                audio.currentTime = 0;
+                audio.play().catch(e => console.error("Cutscene audio failed to play", e));
+            }
+            
+            container.style.display = 'block'; // Changed from flex
+            cutsceneState.scenes = container.querySelectorAll('.scene');
+            
+            cutsceneState.scenes.forEach((scene, index) => {
+                scene.classList.toggle('active', index === 0);
+            });
+            cutsceneState.currentSceneIndex = 0;
+        }
+
+        function advanceCutscene() {
+            if (!cutsceneState.active) return;
+
+            if (cutsceneState.scenes[cutsceneState.currentSceneIndex]) {
+                cutsceneState.scenes[cutsceneState.currentSceneIndex].classList.remove('active');
+            }
+            cutsceneState.currentSceneIndex++;
+
+            if (cutsceneState.currentSceneIndex >= cutsceneState.scenes.length) {
+                endCurrentCutscene();
+            } else {
+                if (cutsceneState.scenes[cutsceneState.currentSceneIndex]) {
+                   cutsceneState.scenes[cutsceneState.currentSceneIndex].classList.add('active');
+                }
+            }
+        }
+
+        function endCurrentCutscene() {
+            if (!cutsceneState.active) return;
+            
+            if(cutsceneState.container) {
+                cutsceneState.container.style.display = 'none';
+            }
+            if (cutsceneState.audio) {
+                cutsceneState.audio.pause();
+                cutsceneState.audio.currentTime = 0;
+            }
+            
+            const callback = cutsceneState.onCompleteCallback;
+            
+            gameState = previousGameState;
+            cutsceneState.active = false;
+            cutsceneState.onCompleteCallback = null;
+            cutsceneState.container = null;
+            cutsceneState.audio = null;
+
+            if (callback) {
+                callback();
+            }
+        }
+
+        function startWorldIntroCutscene() {
+            elements.introAudio.pause();
+            elements.introAudio.currentTime = 0;
+            playCutscene(elements.worldIntroCutsceneContainer, elements.worldIntroAudio, () => {
+                startGame(true);
+            });
+        }
+
+        function startFirstKillCutscene() {
+            if (firstKillCutscenePlayed) return;
+            firstKillCutscenePlayed = true;
+            playCutscene(elements.firstKillCutsceneContainer, elements.cutsceneAudio, () => {
+                startMusicIfNeeded(true);
+            });
+        }
+        
+        // --- Dialogue System ---
+        function startDialogue(npc) {
+            gameState = 'dialog';
+            const questData = questDatabase[npc.dialogueId];
+            if (!questData || !questData.dialogue) {
+                console.error("Dialogue not found for NPC:", npc.id);
+                endDialogue();
+                return;
+            }
+            currentDialogueState = {
+                npc: npc,
+                dialogue: questData.dialogue,
+                currentNodeKey: 'start',
+                selectedIndex: 0
+            };
+            
+            // Special logic for quest givers to check quest status before starting dialogue
+            if (npc.type === 'quest') {
+                const activeQuest = activeQuests.find(q => q.id === npc.dialogueId && !q.completed);
+                
+                if (activeQuest) {
+                     // Check for item return
+                    if (activeQuest.progress > 0 && questData.dialogue.return_datastick) {
+                         currentDialogueState.currentNodeKey = 'return_datastick';
+                    } else if (activeQuest.progress > 0 && questData.dialogue.return_schematics) {
+                        currentDialogueState.currentNodeKey = 'return_schematics';
+                    } else if (activeQuest.progress > 0 && questData.dialogue.return_package) {
+                        currentDialogueState.currentNodeKey = 'return_package';
+                    } else if (questData.dialogue.quest_accepted) {
+                        currentDialogueState.currentNodeKey = 'quest_accepted';
+                    }
+                }
+            }
+            
+            const portraitCanvas = elements.dialogPortrait;
+            portraitCanvas.width = portraitCanvas.clientWidth;
+            portraitCanvas.height = portraitCanvas.clientHeight;
+            const pctx = elements.portraitCtx;
+            pctx.imageSmoothingEnabled = false;
+            pctx.clearRect(0,0,portraitCanvas.width, portraitCanvas.height);
+            let asset;
+            switch(npc.id) {
+                case 'npc_glitch': asset = assets.glitch; break;
+                case 'npc_cortex': asset = assets.cortexNpc; break;
+                case 'npc_slick': asset = assets.slick; break;
+                case 'npc_anya': asset = assets.anya; break;
+                default: asset = assets.npc;
+            }
+            pctx.drawImage(asset, 0, 0, portraitCanvas.width, portraitCanvas.height);
+
+            elements.dialogOverlay.style.display = 'block';
+            elements.dialogBox.style.display = 'flex';
+            displayDialogueNode(currentDialogueState.currentNodeKey);
+        }
+
+        function displayDialogueNode(nodeKey) {
+            const node = currentDialogueState.dialogue[nodeKey];
+            if (!node) {
+                endDialogue();
+                return;
+            }
+            currentDialogueState.currentNodeKey = nodeKey;
+            
+            elements.dialogSpeaker.textContent = node.speaker;
+            elements.dialogText.textContent = node.text;
+            elements.dialogOptions.innerHTML = '';
+            
+            if (node.options) {
+                elements.dialogPrompt.style.display = 'none';
+                node.options.forEach(opt => {
+                    if (opt.condition && !opt.condition()) return; // Skip options that don't meet conditions
+
+                    const button = document.createElement('button');
+                    button.className = 'dialog-option-button';
+                    button.textContent = opt.text;
+                    button.dataset.next = opt.next;
+                    if (opt.action) button.dataset.action = opt.action;
+                    elements.dialogOptions.appendChild(button);
+                });
+                currentDialogueState.selectedIndex = 0;
+                updateDialogueSelection();
+            } else {
+                elements.dialogPrompt.style.display = 'block';
+            }
+        }
+
+        function handleDialogueKeyboard(e) {
+            const key = e.key.toLowerCase();
+            const options = elements.dialogOptions.children;
+            const textBox = elements.dialogText;
+
+            // Check if the text box is scrollable and not at the bottom
+            const isScrollable = textBox.scrollHeight > textBox.clientHeight;
+            // Use a small tolerance (e.g., 1 pixel) for the bottom check
+            const isAtBottom = textBox.scrollTop + textBox.clientHeight >= textBox.scrollHeight - 1;
+
+            if (options.length > 0 && (key === 'w' || key === 's')) {
+                // If the box is scrollable but not at the bottom, let the default scroll happen
+                if (isScrollable && !isAtBottom) {
+                    return; // Don't prevent default, don't navigate options
+                }
+                
+                // Otherwise, prevent default and navigate options
+                e.preventDefault();
+                if (key === 'w') {
+                    currentDialogueState.selectedIndex = (currentDialogueState.selectedIndex - 1 + options.length) % options.length;
+                } else if (key === 's') {
+                    currentDialogueState.selectedIndex = (currentDialogueState.selectedIndex + 1) % options.length;
+                }
+                updateDialogueSelection();
+
+            } else if (key === 'e') {
+                e.preventDefault();
+                handleDialogueInteraction(e);
+            } else if (key === 'q') {
+                e.preventDefault();
+                endDialogue();
+            }
+        }
+
+        function handleDialogueInteraction(e) {
+            if (gameState !== 'dialog') return;
+
+            let nextNodeKey = null;
+            let action = null;
+            
+            // Handle button clicks
+            if (e.target && e.target.classList.contains('dialog-option-button')) {
+                nextNodeKey = e.target.dataset.next;
+                action = e.target.dataset.action;
+            } 
+            // Handle 'E' key press for continuing
+            else if (e.key && e.key.toLowerCase() === 'e') {
+                const currentNode = currentDialogueState.dialogue[currentDialogueState.currentNodeKey];
+                if (currentNode && !currentNode.options) { // Only advance if there are no options
+                    nextNodeKey = currentNode.next;
+                } else if (currentNode.options) {
+                    const selectedButton = elements.dialogOptions.children[currentDialogueState.selectedIndex];
+                    if (selectedButton) {
+                        nextNodeKey = selectedButton.dataset.next;
+                        action = selectedButton.dataset.action;
+                    }
+                }
+            }
+
+            if (action) {
+                handleDialogueAction(action);
+            }
+
+            if (gameState !== 'dialog') return; 
+
+            if (nextNodeKey) {
+                displayDialogueNode(nextNodeKey);
+            } else {
+                const currentNode = currentDialogueState.dialogue[currentDialogueState.currentNodeKey];
+                if (currentNode && !currentNode.options && !currentNode.next) {
+                    endDialogue();
+                }
+            }
+        }
+
+        function handleDialogueAction(action) {
+            const npcId = currentDialogueState.npc.id;
+            const questId = npcId.replace('npc_', 'q_');
+            
+            switch(action) {
+                case 'startQuest':
+                    startQuest(currentDialogueState.npc.dialogueId);
+                    break;
+                case 'completeQuest':
+                    completeQuest(currentDialogueState.npc.dialogueId);
+                    break;
+                case 'declineQuest':
+                    endDialogue();
+                    break;
+                case 'healPlayer':
+                    player.nuyen -= 100;
+                    player.health = player.maxHealth;
+                    showMessage("Patched up.", 1500);
+                    break;
+                case 'openCyberVendor':
+                    openVendor('cyber');
+                    endDialogue();
+                    break;
+                case 'generateQuest':
+                     generateGlitchQuest();
+                     endDialogue();
+                     break;
+            }
+        }
+
+        function endDialogue() {
+            elements.dialogOverlay.style.display = 'none';
+            elements.dialogBox.style.display = 'none';
+            currentDialogueState = {};
+            if (gameState === 'dialog') {
+                gameState = 'physical';
+            }
+        }
+
+        // --- Vendor System ---
+        function openVendor(defaultTab = 'arms') {
+            gameState = 'vendor';
+            vendorState = { selectedTabIndex: 0, selectedItemIndex: 0 };
+            populateVendorUI();
+            switchVendorTab(defaultTab, true);
+            elements.mainVendorUI.style.display = 'block';
+        }
+
+        function closeAllVendorUIs() {
+            if (elements.mainVendorUI) elements.mainVendorUI.style.display = 'none';
+            if (gameState === 'vendor') gameState = 'physical';
+        }
+
+        function populateVendorUI() {
+            ['arms', 'cyber', 'network'].forEach(category => {
+                const listPane = document.getElementById(`vendor-list-${category}`);
+                if (!listPane) return;
+                listPane.innerHTML = '';
+                vendorDatabase[category].forEach(item => {
+                    const itemDiv = document.createElement('div');
+                    itemDiv.className = 'vendor-item';
+                    itemDiv.innerHTML = `
+                        <div class="vendor-item-info">
+                            <h3>${item.name}</h3>
+                            <p>${item.description} (${item.cost}¥)</p>
+                        </div>
+                        <button class="vendor-buy-button" data-item-id="${item.id}" data-item-cost="${item.cost}" data-item-type="${item.type}">BUY</button>
+                    `;
+                    listPane.appendChild(itemDiv);
+                });
+            });
+        }
+
+        function switchVendorTab(tabId, isInitial = false) {
+            const tabs = ['arms', 'cyber', 'network'];
+            vendorState.selectedTabIndex = tabs.indexOf(tabId);
+
+            document.querySelectorAll('.vendor-tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.vendor-item-list-pane').forEach(p => p.classList.remove('active'));
+            document.querySelector(`.vendor-tab[data-tab="${tabId}"]`).classList.add('active');
+            document.getElementById(`vendor-list-${tabId}`).classList.add('active');
+            
+            if (!isInitial) {
+                vendorState.selectedItemIndex = 0;
+            }
+            updateVendorSelection();
+        }
+
+        function handlePurchase(e) {
+            const button = e.target.closest('.vendor-buy-button');
+            if (!button) return;
+
+            const itemId = button.dataset.itemId;
+            const cost = parseInt(button.dataset.itemCost);
+            const type = button.dataset.itemType;
+
+            if (player.nuyen < cost) {
+                showMessage("Not enough nuyen, choom.", 2000);
+                return;
+            }
+
+            player.nuyen -= cost;
+            showMessage(`Purchased ${itemId.replace(/_/g, ' ')}.`, 2000);
+
+            switch(type) {
+                case 'weapon':
+                    if (!player.weapons.includes(itemId)) player.weapons.push(itemId);
+                    break;
+                case 'cyberware':
+                     if (!player.cyberware.includes(itemId)) {
+                        player.cyberware.push(itemId);
+                        // Apply cyberware effects
+                        if (itemId === 'subdermal_armor') player.maxHealth += 25;
+                        if (itemId === 'reflex_booster') player.baseSpeed *= 1.1;
+                        if (itemId === 'smartlink') player.accuracyBonus += 0.1;
+                        if (itemId === 'deck_upgrade_1') player.matrixDamageBonus += 10;
+                        player.health = player.maxHealth;
+                     }
+                    break;
+                case 'consumable':
+                    if (itemId === 'grenade') player.grenades += 3;
+                    if (itemId === 'medkit') player.health = Math.min(player.maxHealth, player.health + 50);
+                    break;
+            }
+        }
+        
+        // --- Status Menu ---
+        function toggleStatusMenu() {
+            if (gameState === 'menu') {
+                elements.statusMenuOverlay.style.display = 'none';
+                gameState = previousGameState;
+            } else if (gameState !== 'dialog' && gameState !== 'battle') {
+                previousGameState = gameState;
+                gameState = 'menu';
+                statusMenuState.selectedQuestIndex = 0;
+                updateStatusMenu();
+                elements.statusMenuOverlay.style.display = 'flex';
+            }
+        }
+
+        function updateStatusMenu() {
+            elements.statusLevel.textContent = player.level;
+            elements.statusHealth.textContent = `${player.health} / ${player.maxHealth}`;
+            elements.statusNuyen.textContent = `${player.nuyen}¥`;
+            elements.statusXp.textContent = `${player.xp} / ${player.xpToNextLevel}`;
+
+            elements.equipmentList.innerHTML = '';
+            player.weapons.forEach(w => {
+                const li = document.createElement('li');
+                li.textContent = w.replace(/_/g, ' ').toUpperCase();
+                if (w === player.activeWeapon) li.className = 'active-weapon';
+                elements.equipmentList.appendChild(li);
+            });
+
+            elements.cyberwareList.innerHTML = player.cyberware.length === 0 
+                ? '<li>NONE INSTALLED</li>' 
+                : player.cyberware.map(c => `<li>${vendorDatabase.cyber.find(i=>i.id===c)?.name || c}</li>`).join('');
+
+            const currentActiveQuests = activeQuests.filter(q => !q.completed);
+            elements.activeQuests.innerHTML = currentActiveQuests.length === 0
+                ? '<div>NO ACTIVE JOBS</div>'
+                : currentActiveQuests.map(q => `
+                    <div class="quest-list-item">
+                        <div>
+                            <div class="quest-title">${q.title}</div>
+                            <div class="quest-objective">- ${q.objective.replace('{progress}', q.progress)}</div>
+                        </div>
+                        <button class="track-quest-btn ${trackedQuestId === q.id ? 'active' : ''}" data-quest-id="${q.id}">TRACK</button>
+                    </div>`).join('');
+
+            const completedQuestObjects = completedQuests.map(id => Object.values(questDatabase).find(q => q.id === id)).filter(Boolean);
+            elements.completedQuests.innerHTML = completedQuestObjects.length === 0
+                ? '<div>NO COMPLETED JOBS</div>'
+                : completedQuestObjects.map(q => `<div class="completed-quest"><div class="quest-title">${q.title}</div></div>`).join('');
+            
+            updateStatusMenuSelection();
+        }
+
+        // --- Battle System ---
+        function startNewBattle(mapX, mapY) {
+            previousGameState = gameState;
+            gameState = 'battle';
+            matrixMap[mapY][mapX] = 0; // Clear the encounter from the map
+
+            battleState = {
+                player: { health: 100, maxHealth: 100, isBlocking: false },
+                ice: { health: 100, maxHealth: 100, name: "Black ICE" },
+                turn: 'player',
+                selectedActionIndex: 0
+            };
+
+            elements.rpgBattleContainer.style.display = 'flex';
+            elements.battlePlayerHealth.style.width = '100%';
+            elements.battleIceHealth.style.width = '100%';
+            elements.battleActionsContainer.querySelectorAll('button').forEach(b => b.disabled = false);
+            
+            updateBattleSelection();
+            typeWriter("Hostile ICE detected!", () => {}, 50);
+        }
+
+        function handleBattleAction(e) {
+            if (gameState !== 'battle' || battleState.turn !== 'player') return;
+
+            const action = e.target.dataset.action;
+            if (!action) return;
+
+            battleState.turn = 'enemy'; // Player acts, then it's enemy's turn
+            elements.battleActionsContainer.querySelectorAll('button').forEach(b => b.disabled = true);
+
+            switch(action) {
+                case 'attack':
+                    const damage = 20 + player.matrixDamageBonus;
+                    battleState.ice.health -= damage;
+                    typeWriter(`You attack the ICE for ${damage} damage.`, handleEnemyTurn, 50);
+                    break;
+                case 'firewall':
+                    battleState.player.isBlocking = true;
+                    typeWriter(`You raise your firewall.`, handleEnemyTurn, 50);
+                    break;
+                case 'debug':
+                    battleState.player.health = Math.min(battleState.player.maxHealth, battleState.player.health + 30);
+                    typeWriter(`You debug your deck, restoring 30 integrity.`, handleEnemyTurn, 50);
+                    break;
+                case 'flee':
+                    if (Math.random() > 0.5) {
+                        typeWriter(`You successfully jack out!`, endBattle, 50);
+                    } else {
+                        typeWriter(`You failed to escape!`, handleEnemyTurn, 50);
+                    }
+                    return; // Skip enemy turn if flee is successful
+            }
+            updateBattleUI();
+        }
+        
+        function handleEnemyTurn() {
+            if (battleState.ice.health <= 0) {
+                typeWriter("ICE neutralized. Connection stable.", endBattle, 50);
+                return;
+            }
+
+            const iceAction = Math.random();
+            let damageDealt = 25;
+            if (battleState.player.isBlocking) {
+                damageDealt /= 2;
+                battleState.player.isBlocking = false;
+            }
+            battleState.player.health -= damageDealt;
+            typeWriter(`The ICE attacks you for ${damageDealt} damage.`, () => {
+                if (battleState.player.health <= 0) {
+                    typeWriter("Deck integrity failure. Flatlined.", () => {
+                        handlePlayerDeath();
+                        endBattle(true);
+                    }, 50);
+                } else {
+                    battleState.turn = 'player';
+                    elements.battleActionsContainer.querySelectorAll('button').forEach(b => b.disabled = false);
+                    updateBattleSelection();
+                }
+            }, 50);
+            updateBattleUI();
+        }
+
+        function endBattle(playerDied = false) {
+            if (!playerDied) {
+                gameState = previousGameState;
+                giveXP(50);
+            }
+            elements.rpgBattleContainer.style.display = 'none';
+        }
+
+        function updateBattleUI() {
+            elements.battlePlayerHealth.style.width = `${(battleState.player.health / battleState.player.maxHealth) * 100}%`;
+            elements.battleIceHealth.style.width = `${(battleState.ice.health / battleState.ice.maxHealth) * 100}%`;
+        }
+
+        // --- Game Orchestration ---
+        function startGame(startWithDebtQuest = true, isLoad = false, loadedState = null) {
+            elements.introOverlay.style.display = 'none';
+            elements.worldIntroCutsceneContainer.style.display = 'none';
+            elements.firstKillCutsceneContainer.style.display = 'none';
+            
+            if (isLoad && loadedState) {
+                initializePhysicalWorld(); 
+                Object.assign(player, loadedState.player);
+                activeQuests = loadedState.activeQuests || [];
+                completedQuests = loadedState.completedQuests || [];
+                firstKillCutscenePlayed = loadedState.firstKillCutscenePlayed || false;
+                
+                if (loadedState.npcs) {
+                    loadedState.npcs.forEach(savedNpc => {
+                        const gameNpc = npcs.find(n => n.id === savedNpc.id);
+                        if (gameNpc) gameNpc.dialogueId = savedNpc.dialogueId;
+                    });
+                }
+                showMessage("Game Loaded.", 2000);
+            } else {
+                initializePhysicalWorld();
+                setupInitialQuests(startWithDebtQuest);
+                if (!startWithDebtQuest) {
+                    player.nuyen = 500;
+                    showMessage("Test Mode: Started with 500¥ and no debt.", 3000);
+                }
+            }
+
+            elements.gameContainer.style.display = 'block';
+            elements.uiOverlay.style.display = 'flex';
+            gameState = 'physical';
+            
+            elements.canvas.width = window.innerWidth;
+            elements.canvas.height = window.innerHeight;
+
+            updateQuestDisplay();
+            startMusicIfNeeded();
+            gameLoop();
+        }
+
+        function startIntroHandler() {
+            elements.introOverlay.style.display = 'none';
+            startWorldIntroCutscene();
+        }
+
+        function transitionToGameHandler() {
+            startGame(true);
+        }
+        
+        function startNoDebtHandler() {
+            startGame(false);
+        }
+
+        function triggerWorldIntro() {
+            elements.gameStartContainer.style.display = 'none';
+            startWorldIntroCutscene();
+        }
+        
+        // --- ADDED KEYBOARD NAVIGATION LOGIC ---
+
+        function updateDialogueSelection() {
+            const options = elements.dialogOptions.children;
+            for (let i = 0; i < options.length; i++) {
+                options[i].classList.toggle('selected', i === currentDialogueState.selectedIndex);
+            }
+        }
+
+        function updateVendorSelection() {
+            const tabs = document.querySelectorAll('.vendor-tab');
+            tabs.forEach((tab, index) => {
+                tab.classList.toggle('selected', index === vendorState.selectedTabIndex);
+            });
+
+            const activePane = document.querySelector('.vendor-item-list-pane.active');
+            if (activePane) {
+                const items = activePane.querySelectorAll('.vendor-item');
+                items.forEach((item, index) => {
+                    item.classList.toggle('selected', index === vendorState.selectedItemIndex);
+                });
+            }
+        }
+
+        function updateStatusMenuSelection() {
+            const quests = elements.activeQuests.querySelectorAll('.quest-list-item');
+            quests.forEach((q, index) => {
+                q.classList.toggle('selected', index === statusMenuState.selectedQuestIndex);
+            });
+        }
+
+        function updateBattleSelection() {
+            const actions = elements.battleActionsContainer.querySelectorAll('button');
+            actions.forEach((btn, index) => {
+                btn.classList.toggle('selected', index === battleState.selectedActionIndex);
+            });
+        }
+
+        function handleVendorKeyboard(e) {
+            const key = e.key.toLowerCase();
+            const tabs = ['arms', 'cyber', 'network'];
+            const activePane = document.querySelector('.vendor-item-list-pane.active');
+            const items = activePane ? activePane.querySelectorAll('.vendor-item') : [];
+
+            if (key === 'a' || key === 'd') { // Switch tabs
+                let newIndex = vendorState.selectedTabIndex + (key === 'd' ? 1 : -1);
+                if (newIndex < 0) newIndex = tabs.length - 1;
+                if (newIndex >= tabs.length) newIndex = 0;
+                switchVendorTab(tabs[newIndex]);
+            } else if (key === 'w' || key === 's') { // Navigate items
+                let newIndex = vendorState.selectedItemIndex + (key === 's' ? 1 : -1);
+                if (newIndex < 0) newIndex = items.length - 1;
+                if (newIndex >= items.length) newIndex = 0;
+                vendorState.selectedItemIndex = newIndex;
+                updateVendorSelection();
+            } else if (key === 'e') { // Buy item
+                if (items[vendorState.selectedItemIndex]) {
+                    items[vendorState.selectedItemIndex].querySelector('.vendor-buy-button').click();
+                }
+            } else if (key === 'q') { // Close menu
+                closeAllVendorUIs();
+            }
+        }
+
+        function handleStatusMenuKeyboard(e) {
+            const key = e.key.toLowerCase();
+            const quests = elements.activeQuests.querySelectorAll('.quest-list-item');
+
+            if (key === 'w' || key === 's') {
+                let newIndex = statusMenuState.selectedQuestIndex + (key === 's' ? 1 : -1);
+                if (newIndex < 0) newIndex = quests.length - 1;
+                if (newIndex >= quests.length) newIndex = 0;
+                statusMenuState.selectedQuestIndex = newIndex;
+                updateStatusMenuSelection();
+            } else if (key === 'e') {
+                if (quests[statusMenuState.selectedQuestIndex]) {
+                    quests[statusMenuState.selectedQuestIndex].querySelector('.track-quest-btn').click();
+                }
+            } else if (key === 'q' || key === 'r') {
+                toggleStatusMenu();
+            }
+        }
+
+        function handleBattleKeyboard(e) {
+            const key = e.key.toLowerCase();
+            const actions = elements.battleActionsContainer.querySelectorAll('button');
+            let newIndex = battleState.selectedActionIndex;
+
+            if (key === 'w') newIndex = (newIndex - 2 + actions.length) % actions.length;
+            if (key === 's') newIndex = (newIndex + 2) % actions.length;
+            if (key === 'a') newIndex = (newIndex - 1 + actions.length) % actions.length;
+            if (key === 'd') newIndex = (newIndex + 1) % actions.length;
+
+            if (newIndex !== battleState.selectedActionIndex) {
+                battleState.selectedActionIndex = newIndex;
+                updateBattleSelection();
+            }
+
+            if (key === 'e') {
+                if (actions[battleState.selectedActionIndex]) {
+                    actions[battleState.selectedActionIndex].click();
+                }
+            }
+        }
+
+        function handleDialogueKeyboard(e) {
+            const key = e.key.toLowerCase();
+            const options = elements.dialogOptions.children;
+            const textBox = elements.dialogText;
+
+            // Check if the text box is scrollable and not at the bottom
+            const isScrollable = textBox.scrollHeight > textBox.clientHeight;
+            // Use a small tolerance (e.g., 1 pixel) for the bottom check
+            const isAtBottom = textBox.scrollTop + textBox.clientHeight >= textBox.scrollHeight - 1;
+
+            if (options.length > 0 && (key === 'w' || key === 's')) {
+                // If the box is scrollable but not at the bottom, let the default scroll happen
+                if (isScrollable && !isAtBottom) {
+                    return; // Don't prevent default, don't navigate options
+                }
+                
+                // Otherwise, prevent default and navigate options
+                e.preventDefault();
+                if (key === 'w') {
+                    currentDialogueState.selectedIndex = (currentDialogueState.selectedIndex - 1 + options.length) % options.length;
+                } else if (key === 's') {
+                    currentDialogueState.selectedIndex = (currentDialogueState.selectedIndex + 1) % options.length;
+                }
+                updateDialogueSelection();
+
+            } else if (key === 'e') {
+                e.preventDefault();
+                handleDialogueInteraction(e);
+            } else if (key === 'q') {
+                e.preventDefault();
+                endDialogue();
+            }
+        }
+
+
+        // --- Event Listeners ---
+        const addListener = (element, event, handler) => {
+            if (element) {
+                element.addEventListener(event, handler);
+            } else {
+                console.error(`Failed to add listener for event '${event}'. Element not found.`);
+            }
+        };
+
+        window.addEventListener("keydown",e=>{
+            const key = e.key.toLowerCase();
+            keys[key]=true;
+
+            if (e.repeat) return; // Prevent actions from firing multiple times if a key is held down
+
+            if (gameState === 'physical') {
+                if (key === 'r') toggleStatusMenu();
+            } else if (gameState === 'dialog') {
+                handleDialogueKeyboard(e);
+            } else if (gameState === 'vendor') {
+                handleVendorKeyboard(e);
+            } else if (gameState === 'menu') {
+                handleStatusMenuKeyboard(e);
+            } else if (gameState === 'battle') {
+                handleBattleKeyboard(e);
+            } else if (gameState === 'cutscene') {
+                if (key === 'e') {
+                    advanceCutscene();
+                }
+                if (key === 'escape') {
+                    endCurrentCutscene();
+                }
+            }
+        });
+        window.addEventListener("keyup",e=>{
+            const key = e.key.toLowerCase();
+            if(key === "g" && isAimingGrenade){
+                if(player.grenades > 0){
+                    player.grenades--;
+                    const shootX = (keys["arrowright"]?1:0) - (keys["arrowleft"]?1:0);
+                    const shootY = (keys["arrowdown"]?1:0) - (keys["arrowup"]?1:0);
+                    const dirX = shootX === 0 && shootY === 0 ? 1 : shootX;
+                    const dirY = shootY;
+                    const mag = Math.sqrt(dirX*dirX + dirY*dirY) || 1;
+                    grenades.push({x:player.x+20, y:player.y+20, dx:dirX/mag*5, dy:dirY/mag*5, timer:100});
+                }
+            }
+            keys[key]=false;
+        });
+        
+        const allAudioElements = Object.values(elements).filter(el => el instanceof HTMLAudioElement);
+        
+        addListener(elements.fullscreenBtn, 'click', toggleFullscreen);
+
+        addListener(elements.muteBtn, 'click', () => {
+            isMuted = !isMuted;
+            allAudioElements.forEach(audio => audio.muted = isMuted);
+            elements.volumeSlider.value = isMuted ? 0 : lastVolume;
+            elements.muteBtn.querySelector('.icon-unmuted').style.display = isMuted ? 'none' : 'block';
+            elements.muteBtn.querySelector('.icon-muted').style.display = isMuted ? 'block' : 'none';
+        });
+
+        addListener(elements.volumeSlider, 'input', (e) => {
+            const volume = parseFloat(e.target.value);
+            allAudioElements.forEach(audio => audio.volume = volume);
+            isMuted = volume === 0;
+            if (volume > 0) {
+                lastVolume = volume;
+            }
+            allAudioElements.forEach(audio => audio.muted = isMuted);
+            elements.muteBtn.querySelector('.icon-unmuted').style.display = isMuted ? 'none' : 'block';
+            elements.muteBtn.querySelector('.icon-muted').style.display = isMuted ? 'block' : 'none';
+        });
+
+        addListener(elements.nextTrackBtn, 'click', playNextTrack);
+        
+        addListener(elements.mainVendorUI, "click", e => {
+            if(e.target.classList.contains("vendor-buy-button")){handlePurchase(e)}
+            if(e.target.classList.contains("vendor-tab")){switchVendorTab(e.target.dataset.tab)}
+            if(e.target.classList.contains("vendor-close-button")){closeAllVendorUIs()}
+        });
+
+        addListener(elements.battleActionsContainer, "click", handleBattleAction);
+        addListener(elements.continueButton, "click", continueGame);
+        
+        addListener(elements.startButton, 'click', startIntroHandler);
+        addListener(elements.skipIntroButton, 'click', transitionToGameHandler);
+        addListener(elements.startNoDebtButton, 'click', startNoDebtHandler);
+        addListener(elements.startGameButton, 'click', triggerWorldIntro);
+        addListener(elements.dialogOptions, 'click', handleDialogueInteraction);
+
+        addListener(elements.activeQuests, 'click', (e) => {
+            if (e.target.classList.contains('track-quest-btn')) {
+                const newTrackedId = e.target.dataset.questId;
+                trackedQuestId = trackedQuestId === newTrackedId ? null : newTrackedId;
+                updateQuestDisplay();
+                updateStatusMenu();
+            }
+        });
+
+        function returnToPhysicalWorld() {
+            gameState = 'physical';
+            playMusic(Math.floor(Math.random() * 12) + 1);
+        }
+
+        function generateGlitchQuest() {
+            const oldGlitchIndex = activeQuests.findIndex(q => q.isGlitchQuest);
+            if (oldGlitchIndex > -1) activeQuests.splice(oldGlitchIndex, 1);
+
+            const questTypes = ['destroy', 'retrieve'];
+            const questType = questTypes[Math.floor(Math.random() * questTypes.length)];
+            const targetCorp = ['Arasaka', 'Militech', 'Zetatech', 'InfoComp'][Math.floor(Math.random() * 4)];
+            const newQuestId = `glitch_${Date.now()}`;
+
+            let newQuest = {
+                id: newQuestId,
+                title: `Vendetta: ${targetCorp}`,
+                isGlitchQuest: true,
+                completed: false
+            };
+
+            if (questType === 'destroy') {
+                newQuest.objective = `Jack into a ${targetCorp} terminal in the Construction Zone and corrupt their data core.`;
+            } else {
+                newQuest.objective = `Jack into a ${targetCorp} terminal in the Construction Zone and retrieve their payroll data.`;
+            }
+            
+            obstacles.push({
+                x: zones.construction.x + 200 + Math.random() * (zones.construction.width - 400),
+                y: zones.construction.y + 200 + Math.random() * (zones.construction.height - 400),
+                width: 48, height: 48, isTerminal: true, forQuest: newQuestId
+            });
+
+            activeQuests.push(newQuest);
+            trackedQuestId = newQuestId;
+            updateQuestDisplay();
+            showMessage(`New Job from Glitch: ${newQuest.title}`);
+        }
+
+        function generateSaveCode() {
+            const saveState = {
+                player: player,
+                activeQuests: activeQuests.map(q => ({ id: q.id, progress: q.progress, objective: q.objective })),
+                completedQuests: completedQuests,
+                npcs: npcs.map(n => ({ id: n.id, dialogueId: n.dialogueId })),
+                firstKillCutscenePlayed: firstKillCutscenePlayed
+            };
+            const jsonString = JSON.stringify(saveState);
+            const encoded = btoa(jsonString);
+            elements.saveCodeTextarea.value = encoded;
+            elements.saveCodeModal.style.display = 'flex';
+        }
+
+        function loadFromSaveCode(code) {
+            try {
+                const jsonString = atob(code);
+                const loadedState = JSON.parse(jsonString);
+                startGame(false, true, loadedState);
+            } catch (e) {
+                console.error("Failed to load save code:", e);
+                showMessage("Invalid or corrupt save code.", 3000);
+            }
+        }
+
+        addListener(elements.saveGameButton, 'click', generateSaveCode);
+        addListener(elements.closeSaveModalButton, 'click', () => {
+            elements.saveCodeModal.style.display = 'none';
+        });
+        addListener(elements.copySaveCodeButton, 'click', () => {
+            elements.saveCodeTextarea.select();
+            document.execCommand('copy');
+            showMessage("Code copied to clipboard!", 1500);
+        });
+        addListener(elements.loadGameButton, 'click', () => {
+            const code = elements.loadCodeInput.value.trim();
+            if (code) {
+                loadFromSaveCode(code);
+            } else {
+                showMessage("Please enter a save code.", 2000);
+            }
+        });
+        
+        // --- Initial Setup ---
+        generateAssets();
+        
+        allAudioElements.forEach(audio => audio.volume = lastVolume);
+
+        allAudioElements.forEach(track => {
+            if(track.id.startsWith('bgm')) track.addEventListener('ended', playNextTrack);
+        });
+
+        window.addEventListener('resize', () => {
+            if (elements.canvas) {
+                elements.canvas.width = window.innerWidth;
+                elements.canvas.height = window.innerHeight;
+            }
+            if (elements.introCanvas) {
+                elements.introCanvas.width = window.innerWidth;
+                elements.introCanvas.height = window.innerHeight;
+            }
+            if (elements.matrixCanvas) {
+                elements.matrixCanvas.width = window.innerWidth;
+                elements.matrixCanvas.height = window.innerHeight;
+            }
+            if (gameState === 'battle') {
+                // resizeBattle3D(); // This function is not defined, but we can add a placeholder
+            }
+        });
+    });
+    </script>
+</body>
+</html>

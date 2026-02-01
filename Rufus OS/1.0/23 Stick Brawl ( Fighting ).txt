@@ -1,0 +1,333 @@
+#include <Arduino.h>
+#include <U8g2lib.h>
+#include <Wire.h>
+
+// SH1106 128x64 I2C
+U8G2_SH1106_128X64_NONAME_1_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+
+// --- PIN DEFINITIONS ---
+#define STICK_X    A0
+#define STICK_Y    A1
+#define BTN_LP     11 // Light Punch
+#define BTN_HP     10 // Heavy Punch
+#define BTN_LK     9  // Light Kick
+#define BTN_HK     5  // Heavy Kick
+#define BZ_OUT     3  
+
+// --- GAME CONSTANTS ---
+#define GROUND_Y 58
+#define GRAVITY 0.22f      
+#define WALK_SPEED 0.65f   
+#define JUMP_FORCE -4.2f   
+
+// --- ENUMS ---
+enum State { IDLE, WALKING, LP_ATK, HP_ATK, LK_ATK, HK_ATK, BLOCKING, HADUKEN, HIT, DEAD };
+enum GameState { TITLE, FIGHTING, ROUND_OVER };
+
+// --- STRUCTURES ---
+struct Projectile {
+  float x, y, vx;
+  bool active;
+  bool ownerIsPlayer;
+};
+
+struct Fighter {
+  float x, y;
+  float vx, vy;
+  int hp;
+  int maxHp;
+  bool isPlayer;
+  bool facingRight;
+  State state;
+  int stateTimer;
+  int motionStage; 
+  unsigned long motionTimer;
+};
+
+// --- GLOBAL VARIABLES ---
+Fighter p, ai;
+Projectile fireball;
+GameState gState = TITLE;
+int winner = 0; 
+
+// --- AUDIO ---
+void playSfx(int f, int d) { tone(BZ_OUT, f, d); }
+
+void initFighter(Fighter &f, bool player) {
+  f.hp = 100;
+  f.maxHp = 100;
+  f.isPlayer = player;
+  f.x = player ? 25 : 103;
+  f.y = GROUND_Y;
+  f.vx = 0;
+  f.vy = 0;
+  f.facingRight = player;
+  f.state = IDLE;
+  f.stateTimer = 0;
+  f.motionStage = 0;
+  f.motionTimer = 0;
+}
+
+void resetProjectiles() {
+  fireball.active = false;
+}
+
+// --- DRAWING UTILS ---
+void drawStickFigure(Fighter &f) {
+  int x = (int)f.x;
+  int y = (int)f.y;
+  int dir = f.facingRight ? 1 : -1;
+
+  u8g2.drawCircle(x, y - 22, 3);
+  u8g2.drawLine(x, y - 19, x, y - 10);
+
+  if (f.state == WALKING && (millis() / 200) % 2 == 0) {
+    u8g2.drawLine(x, y - 10, x - 5, y); 
+    u8g2.drawLine(x, y - 10, x + 5, y); 
+  } else {
+    u8g2.drawLine(x, y - 10, x - 3, y);
+    u8g2.drawLine(x, y - 10, x + 3, y);
+  }
+
+  switch (f.state) {
+    case LP_ATK:
+      u8g2.drawLine(x, y - 17, x + (10 * dir), y - 17); // Short punch
+      break;
+    case HP_ATK:
+      u8g2.drawLine(x, y - 17, x + (14 * dir), y - 15); // Long heavy punch
+      u8g2.drawDisc(x + (14 * dir), y - 15, 1);
+      break;
+    case LK_ATK:
+      u8g2.drawLine(x, y - 10, x + (10 * dir), y - 8); // Fast low kick
+      break;
+    case HK_ATK:
+      u8g2.drawLine(x, y - 10, x + (16 * dir), y - 22); // High roundhouse
+      break;
+    case BLOCKING:
+      u8g2.drawLine(x + (3 * dir), y - 22, x + (3 * dir), y - 5); // Guard bar
+      break;
+    case HADUKEN:
+      u8g2.drawLine(x, y - 17, x + (12 * dir), y - 14);
+      u8g2.drawLine(x, y - 17, x + (12 * dir), y - 20);
+      break;
+    case HIT:
+      u8g2.drawLine(x, y - 17, x - (6 * dir), y - 25);
+      break;
+    default: 
+      u8g2.drawLine(x, y - 17, x - 3, y - 11);
+      u8g2.drawLine(x, y - 17, x + 3, y - 11);
+      break;
+  }
+}
+
+void drawWorld() {
+  u8g2.drawLine(0, GROUND_Y, 128, GROUND_Y);
+  u8g2.drawFrame(2, 2, 52, 6);
+  u8g2.drawBox(3, 3, p.hp / 2, 4);
+  u8g2.drawFrame(74, 2, 52, 6);
+  u8g2.drawBox(125 - (ai.hp / 2), 3, ai.hp / 2, 4);
+
+  if (fireball.active) {
+    u8g2.drawDisc((int)fireball.x, (int)fireball.y, 2);
+    for(int i=0; i<5; i++) u8g2.drawPixel((int)fireball.x - (fireball.vx*i*1.5), (int)fireball.y + random(-1,2));
+  }
+}
+
+void checkMelee(Fighter &attacker, Fighter &target, int range, int damage) {
+  if (target.state == DEAD) return;
+  float dist = abs(attacker.x - target.x);
+  bool correctDir = (attacker.facingRight && target.x > attacker.x) || (!attacker.facingRight && target.x < attacker.x);
+
+  if (dist < range && correctDir) {
+    if (target.state == BLOCKING) {
+      target.hp -= (damage / 5);
+      playSfx(100, 20);
+    } else {
+      target.hp -= damage;
+      target.state = HIT;
+      target.stateTimer = 20; 
+      target.vx = attacker.facingRight ? 2.5f : -2.5f; 
+      playSfx(attacker.state == HP_ATK || attacker.state == HK_ATK ? 250 : 400, 40);
+    }
+  }
+}
+
+void launchFireball(Fighter &f) {
+  if (fireball.active) return;
+  fireball.active = true;
+  fireball.x = f.x + (f.facingRight ? 12 : -12);
+  fireball.y = f.y - 17;
+  fireball.vx = f.facingRight ? 2.2f : -2.2f; 
+  fireball.ownerIsPlayer = f.isPlayer;
+  playSfx(800, 60);
+}
+
+void updateProjectiles(Fighter &p, Fighter &ai) {
+  if (!fireball.active) return;
+  fireball.x += fireball.vx;
+  if (fireball.x < -10 || fireball.x > 138) fireball.active = false;
+
+  Fighter &target = fireball.ownerIsPlayer ? ai : p;
+  if (abs(fireball.x - target.x) < 8 && abs(fireball.y - (target.y - 15)) < 15) {
+    if (target.state != BLOCKING) {
+      target.hp -= 12;
+      target.state = HIT;
+      target.stateTimer = 18;
+      target.vx = fireball.vx * 0.4f;
+      playSfx(200, 80);
+    } else {
+      target.hp -= 3;
+      playSfx(100, 30);
+    }
+    fireball.active = false;
+  }
+}
+
+void updateFighter(Fighter &f, Fighter &enemy) {
+  if (f.hp <= 0) { f.state = DEAD; f.hp = 0; return; }
+
+  if (f.stateTimer > 0) {
+    f.stateTimer--;
+    if (f.stateTimer == 0 && f.state != DEAD) f.state = IDLE;
+  }
+
+  // Physics
+  f.vx *= 0.78f; 
+  f.x += f.vx;
+  f.y += f.vy;
+
+  if (f.y < GROUND_Y) {
+    f.vy += GRAVITY;
+  } else {
+    if (f.vy >= 0) {
+      f.y = GROUND_Y;
+      f.vy = 0;
+    }
+  }
+
+  // Boundaries
+  if (f.x < 7) { f.x = 7; f.vx = 0; }
+  if (f.x > 121) { f.x = 121; f.vx = 0; }
+  if (f.y < 25) { f.y = 25; f.vy = 0; }
+
+  if (f.state != LP_ATK && f.state != HP_ATK && f.state != LK_ATK && f.state != HK_ATK && f.state != HADUKEN && f.state != HIT) {
+    f.facingRight = (enemy.x > f.x);
+  }
+
+  if (f.isPlayer) {
+    if (f.stateTimer == 0) {
+      int mx = analogRead(STICK_X);
+      int my = analogRead(STICK_Y);
+      
+      bool down = (my > 750);
+      bool up = (my < 250);
+      bool left = (mx < 250);
+      bool right = (mx > 750);
+      bool forward = f.facingRight ? right : left;
+      bool back = f.facingRight ? left : right;
+      
+      if (millis() - f.motionTimer > 600) f.motionStage = 0; 
+
+      // Motion Buffer (Haduken)
+      if (down && !forward) { f.motionStage = 1; f.motionTimer = millis(); }
+      else if (down && forward && f.motionStage == 1) { f.motionStage = 2; f.motionTimer = millis(); }
+      else if (!down && forward && (f.motionStage == 2 || f.motionStage == 1)) { f.motionStage = 3; f.motionTimer = millis(); }
+
+      // Backwards Blocking Logic
+      if (back && f.y >= GROUND_Y) {
+        f.state = BLOCKING;
+        f.vx = -WALK_SPEED * (f.facingRight ? 0.4 : -0.4); // Slow retreat while blocking
+      }
+      else if (up && f.y >= GROUND_Y) { 
+        f.vy = JUMP_FORCE; 
+        f.y -= 1; 
+        playSfx(400, 20); 
+      }
+      else if (digitalRead(BTN_LP) == LOW) {
+        if (f.motionStage == 3) { f.state = HADUKEN; f.stateTimer = 45; launchFireball(f); }
+        else { f.state = LP_ATK; f.stateTimer = 18; checkMelee(f, enemy, 16, 6); }
+        f.motionStage = 0;
+      }
+      else if (digitalRead(BTN_HP) == LOW) {
+        f.state = HP_ATK; f.stateTimer = 35; checkMelee(f, enemy, 18, 15); f.motionStage = 0;
+      }
+      else if (digitalRead(BTN_LK) == LOW) {
+        f.state = LK_ATK; f.stateTimer = 22; checkMelee(f, enemy, 16, 8);
+      }
+      else if (digitalRead(BTN_HK) == LOW) {
+        f.state = HK_ATK; f.stateTimer = 45; checkMelee(f, enemy, 22, 22);
+      }
+      else if (forward) { f.vx = f.facingRight ? WALK_SPEED : -WALK_SPEED; f.state = WALKING; }
+      else if (f.y >= GROUND_Y) f.state = IDLE;
+    }
+  } else {
+    // AI Logic (Slightly improved for the new pacing)
+    if (f.stateTimer == 0) {
+      float dist = abs(f.x - enemy.x);
+      if (dist > 65 && !fireball.active && random(200) < 2) {
+         f.state = HADUKEN; f.stateTimer = 50; launchFireball(f);
+      } else if (dist > 35) {
+        f.vx = (enemy.x > f.x) ? WALK_SPEED * 0.7f : -WALK_SPEED * 0.7f;
+        f.state = WALKING;
+      } else {
+        int r = random(100);
+        if (r < 8) { f.state = LP_ATK; f.stateTimer = 22; checkMelee(f, enemy, 16, 6); }
+        else if (r < 12) { f.state = HK_ATK; f.stateTimer = 45; checkMelee(f, enemy, 22, 22); }
+        else if (r < 25) { f.state = BLOCKING; f.stateTimer = 30; }
+        else f.state = IDLE;
+      }
+    }
+  }
+}
+
+void setup() {
+  pinMode(BTN_LP, INPUT_PULLUP);
+  pinMode(BTN_HP, INPUT_PULLUP);
+  pinMode(BTN_LK, INPUT_PULLUP);
+  pinMode(BTN_HK, INPUT_PULLUP);
+  u8g2.begin();
+  randomSeed(analogRead(A2));
+  initFighter(p, true);
+  initFighter(ai, false);
+}
+
+void loop() {
+  u8g2.firstPage();
+  do {
+    if (gState == TITLE) {
+      u8g2.setFont(u8g2_font_7x14_tf);
+      u8g2.drawStr(25, 30, "STICK-BRAWL");
+      u8g2.setFont(u8g2_font_5x7_tf);
+      u8g2.drawStr(32, 50, "PUNCH TO START");
+      if (digitalRead(BTN_LP) == LOW) { gState = FIGHTING; playSfx(600, 100); delay(200); }
+    } 
+    else if (gState == FIGHTING) {
+      updateFighter(p, ai);
+      updateFighter(ai, p);
+      updateProjectiles(p, ai);
+      drawWorld();
+      drawStickFigure(p);
+      drawStickFigure(ai);
+      if (p.hp <= 0 || ai.hp <= 0) {
+        gState = ROUND_OVER;
+        winner = (p.hp > ai.hp) ? 1 : 2;
+        playSfx(150, 400);
+      }
+    }
+    else if (gState == ROUND_OVER) {
+      u8g2.setFont(u8g2_font_7x14_tf);
+      u8g2.drawStr(38, 30, winner == 1 ? "VICTORY" : "DEFEATED");
+      u8g2.setFont(u8g2_font_5x7_tf);
+      u8g2.drawStr(28, 50, "PUNCH TO REMATCH");
+      if (digitalRead(BTN_LP) == LOW) {
+        initFighter(p, true);
+        initFighter(ai, false);
+        resetProjectiles();
+        gState = FIGHTING;
+        delay(200);
+      }
+    }
+  } while (u8g2.nextPage());
+
+  delay(20); 
+}

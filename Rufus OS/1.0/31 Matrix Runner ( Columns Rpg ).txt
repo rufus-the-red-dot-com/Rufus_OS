@@ -1,0 +1,311 @@
+#include <Arduino.h>
+#include <U8g2lib.h>
+#include <Wire.h>
+
+// SH1106 128x64 I2C
+U8G2_SH1106_128X64_NONAME_1_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+
+// --- PIN DEFINITIONS ---
+#define STICK_X    A0
+#define STICK_Y    A1
+#define BTN_ROTATE 11 
+#define BTN_DECK   10 // RPG Menu / Pause
+#define BTN_B      9  
+#define BTN_C      8  
+#define BZ_OUT     3  
+
+// --- GAME CONSTANTS ---
+#define COLS 6      
+#define ROWS 11     // 11 * 6px = 66px. Overflows 64px screen for true full-height.
+#define J_SIZE 6    
+#define BOARD_X 46  
+#define BOARD_Y 0   
+
+// --- ENUMS ---
+enum GameState { TITLE, SELECT_CORP, PLAYING, CLEARING, PAUSE_MENU, JACK_OUT };
+
+// --- RPG PERSISTENT STATE ---
+uint32_t totalNodesCleared = 0;
+uint16_t runnerLevel = 1;
+int currentCorp = 0;
+
+const char* corps[] = {"RENRAKU", "AZTECHNOLOGY", "NEONET", "FUCHAI"};
+float corpDifficulty[] = {0.04f, 0.06f, 0.08f, 0.12f};
+
+// --- SESSION STATE ---
+GameState state = TITLE;
+uint8_t board[COLS][ROWS];
+bool matchBoard[COLS][ROWS]; 
+uint8_t falling[3];     
+uint8_t nextJewels[3];  
+int8_t pX = 2;          
+float pY = 0;           
+float fallSpeed = 0.04f;
+uint32_t sessionNodes = 0;
+int clearTimer = 0;
+
+// --- AUDIO ---
+void playSfx(int f, int d) { tone(BZ_OUT, f, d); }
+
+// --- HARDWARE-SAFE WRAPPERS ---
+void safeLine(int x1, int y1, int x2, int y2) {
+  u8g2.drawLine(constrain(x1,0,127), constrain(y1,0,63), constrain(x2,0,127), constrain(y2,0,63));
+}
+void safeBox(int x, int y, int w, int h) {
+  u8g2.drawBox(constrain(x,0,127), constrain(y,0,63), w, h);
+}
+void safeFrame(int x, int y, int w, int h) {
+  u8g2.drawFrame(constrain(x,0,127), constrain(y,0,63), w, h);
+}
+
+// --- ORIGINAL GEMS (6x6) ---
+void drawJewel(int x, int y, uint8_t type, bool flicker) {
+  if (type == 0) return;
+  if (flicker && (millis() / 50) % 2 == 0) return; 
+  y -= 1; // 1px cutoff for full bleed
+
+  switch(type) {
+    case 1: safeBox(x+1, y+1, 4, 4); break;
+    case 2: safeFrame(x, y, 6, 6); safeFrame(x+1, y+1, 4, 4); break;
+    case 3: // Solid Diamond
+      safeLine(x+3, y, x, y+3); safeLine(x+3, y, x+6, y+3);
+      safeLine(x, y+3, x+3, y+6); safeLine(x+6, y+3, x+3, y+6);
+      u8g2.drawPixel(x+3, y+1); u8g2.drawPixel(x+3, y+2); u8g2.drawPixel(x+3, y+3);
+      u8g2.drawPixel(x+3, y+4); u8g2.drawPixel(x+3, y+5);
+      u8g2.drawPixel(x+2, y+3); u8g2.drawPixel(x+4, y+3); break;
+    case 4: u8g2.drawDisc(constrain(x+3,0,127), constrain(y+3,0,63), 2); break;
+    case 5: // Triangle Up
+      safeLine(x+3, y, x, y+5); safeLine(x+3, y, x+6, y+5); safeLine(x, y+5, x+6, y+5);
+      u8g2.drawPixel(x+3, y+2); u8g2.drawPixel(x+3, y+3); u8g2.drawPixel(x+2, y+4); u8g2.drawPixel(x+4, y+4); break;
+    case 6: // Triangle Down
+      safeLine(x, y, x+6, y); safeLine(x, y, x+3, y+5); safeLine(x+6, y, x+3, y+5);
+      u8g2.drawPixel(x+3, y+1); u8g2.drawPixel(x+3, y+2); u8g2.drawPixel(x+2, y+1); u8g2.drawPixel(x+4, y+1); break;
+  }
+}
+
+void generateTriple(uint8_t t[3]) {
+  for(int i=0; i<3; i++) t[i] = random(1, 7); 
+}
+
+void initDive(int corpIdx) {
+  for(int x=0; x<COLS; x++) {
+    for(int y=0; y<ROWS; y++) {
+        board[x][y] = 0;
+        matchBoard[x][y] = false;
+    }
+  }
+  generateTriple(falling);
+  generateTriple(nextJewels);
+  pX = 2; pY = 0;
+  sessionNodes = 0; 
+  fallSpeed = corpDifficulty[corpIdx] + (runnerLevel * 0.003f);
+  state = PLAYING;
+  playSfx(1000, 50); playSfx(1500, 50);
+}
+
+bool identifyMatches() {
+  bool found = false;
+  for(int x=0; x<COLS; x++) for(int y=0; y<ROWS; y++) matchBoard[x][y] = false;
+  for(int x=0; x<COLS; x++) {
+    for(int y=0; y<ROWS; y++) {
+      if (board[x][y] == 0) continue;
+      uint8_t type = board[x][y];
+      if (y < ROWS-2 && board[x][y+1] == type && board[x][y+2] == type) {
+        matchBoard[x][y] = matchBoard[x][y+1] = matchBoard[x][y+2] = true; found = true;
+      }
+      if (x < COLS-2 && board[x+1][y] == type && board[x+2][y] == type) {
+        matchBoard[x][y] = matchBoard[x+1][y] = matchBoard[x+2][y] = true; found = true;
+      }
+      if (x < COLS-2 && y < ROWS-2 && board[x+1][y+1] == type && board[x+2][y+2] == type) {
+        matchBoard[x][y] = matchBoard[x+1][y+1] = matchBoard[x+2][y+2] = true; found = true;
+      }
+      if (x >= 2 && y < ROWS-2 && board[x-1][y+1] == type && board[x-2][y+2] == type) {
+        matchBoard[x][y] = matchBoard[x-1][y+1] = matchBoard[x-2][y+2] = true; found = true;
+      }
+    }
+  }
+  return found;
+}
+
+void finalizeClear() {
+  uint16_t count = 0;
+  for(int x=0; x<COLS; x++) {
+    for(int y=0; y<ROWS; y++) {
+      if (matchBoard[x][y]) { 
+        board[x][y] = 0; 
+        count++; 
+      }
+    }
+  }
+  
+  sessionNodes += count;
+  totalNodesCleared += count;
+  
+  // XP LOGIC: Threshold scales with level
+  uint32_t threshold = (uint32_t)runnerLevel * 30; 
+  if (totalNodesCleared >= threshold) {
+    runnerLevel++;
+    playSfx(2000, 100); playSfx(2500, 150);
+  }
+}
+
+void applyGravity() {
+  for(int x=0; x<COLS; x++) {
+    for(int y=ROWS-1; y>0; y--) {
+      if (board[x][y] == 0) {
+        for(int k=y-1; k>=0; k--) {
+          if (board[x][k] != 0) { board[x][y] = board[x][k]; board[x][k] = 0; break; }
+        }
+      }
+    }
+  }
+}
+
+void lockAndNew() {
+  int iy = (int)pY;
+  if (iy < 0) iy = 0;
+  if (iy > ROWS - 3) iy = ROWS - 3;
+  board[pX][iy] = falling[0];
+  board[pX][iy+1] = falling[1];
+  board[pX][iy+2] = falling[2];
+  
+  if (identifyMatches()) {
+    state = CLEARING; clearTimer = 18; playSfx(900, 40);
+  } else {
+    if (board[2][0] != 0 || board[2][1] != 0) { 
+      state = JACK_OUT; 
+      playSfx(200, 400); 
+      return; 
+    }
+    for(int i=0; i<3; i++) falling[i] = nextJewels[i];
+    generateTriple(nextJewels);
+    pX = 2; pY = 0;
+    fallSpeed += 0.001f;
+  }
+}
+
+void updateInput() {
+  static unsigned long lastIn = 0;
+  if (millis() - lastIn < 110) return;
+  
+  int sx = analogRead(STICK_X);
+  int sy = analogRead(STICK_Y);
+
+  if (state == PLAYING) {
+    if (sx < 300 && pX > 0 && board[pX-1][(int)pY+2] == 0) { pX--; lastIn = millis(); }
+    if (sx > 700 && pX < COLS-1 && board[pX+1][(int)pY+2] == 0) { pX++; lastIn = millis(); }
+    if (sy > 700) pY += 0.5f;
+
+    if (digitalRead(BTN_ROTATE) == LOW) {
+      uint8_t t = falling[2]; falling[2] = falling[1]; falling[1] = falling[0]; falling[0] = t;
+      lastIn = millis(); playSfx(1500, 10);
+    }
+    if (digitalRead(BTN_DECK) == LOW) { state = PAUSE_MENU; lastIn = millis(); playSfx(600, 30); }
+  } 
+  else if (state == SELECT_CORP) {
+    if (sy < 300) { currentCorp = (currentCorp > 0) ? currentCorp - 1 : 3; lastIn = millis(); }
+    if (sy > 700) { currentCorp = (currentCorp < 3) ? currentCorp + 1 : 0; lastIn = millis(); }
+    if (digitalRead(BTN_ROTATE) == LOW) { initDive(currentCorp); lastIn = millis(); }
+  }
+  else if (state == PAUSE_MENU) {
+    if (digitalRead(BTN_DECK) == LOW || digitalRead(BTN_ROTATE) == LOW) { 
+      state = PLAYING; 
+      lastIn = millis(); 
+    }
+  }
+  else if (state == TITLE) {
+    if (digitalRead(BTN_ROTATE) == LOW) { state = SELECT_CORP; lastIn = millis(); }
+  }
+}
+
+void drawUI() {
+  u8g2.firstPage();
+  do {
+    if (state == TITLE) {
+      u8g2.setFont(u8g2_font_7x14_tf); u8g2.drawStr(30, 25, "JACK IN");
+      u8g2.setFont(u8g2_font_4x6_tf); u8g2.drawStr(22, 45, "PRESS ROTATE TO RUN");
+    } 
+    else if (state == SELECT_CORP) {
+      u8g2.setFont(u8g2_font_5x8_tf); u8g2.drawStr(12, 12, "TARGET ACQUISITION");
+      for(int i=0; i<4; i++) {
+        u8g2.setCursor(20, 28 + (i * 9));
+        if (i == currentCorp) u8g2.print("> "); else u8g2.print("  ");
+        u8g2.print(corps[i]);
+      }
+      u8g2.setFont(u8g2_font_4x6_tf); u8g2.drawStr(15, 63, "RUNNER LVL: "); u8g2.print(runnerLevel);
+    }
+    else if (state == PAUSE_MENU) {
+      u8g2.setFont(u8g2_font_5x8_tf); u8g2.drawStr(22, 12, "-- CYBER DECK --");
+      u8g2.setCursor(15, 28); u8g2.print("LEVEL:    "); u8g2.print(runnerLevel);
+      u8g2.setCursor(15, 38); u8g2.print("SESSION:  "); u8g2.print(sessionNodes);
+      u8g2.setCursor(15, 48); u8g2.print("LIFETIME: "); u8g2.print(totalNodesCleared);
+      u8g2.setFont(u8g2_font_4x6_tf); u8g2.drawStr(20, 62, "ROTATE TO RE-JACK");
+    }
+    else if (state == JACK_OUT) {
+      u8g2.setFont(u8g2_font_7x14_tf); u8g2.drawStr(25, 25, "JACK OUT");
+      u8g2.setFont(u8g2_font_5x8_tf); 
+      u8g2.setCursor(15, 40); u8g2.print("NODES: "); u8g2.print(sessionNodes);
+      u8g2.setCursor(15, 50); u8g2.print("LIFETIME: "); u8g2.print(totalNodesCleared);
+      u8g2.setFont(u8g2_font_4x6_tf); u8g2.drawStr(25, 62, "ROTATE TO RE-ENTRY");
+    }
+    else {
+      // FULL VERTICAL FRAME
+      u8g2.drawFrame(BOARD_X - 1, 0, (COLS * J_SIZE) + 2, 64);
+      for(int x=0; x<COLS; x++) {
+        for(int y=0; y<ROWS; y++) {
+          if (board[x][y] != 0) drawJewel(BOARD_X + (x * J_SIZE), (y * J_SIZE), board[x][y], matchBoard[x][y]);
+        }
+      }
+      if (state == PLAYING) {
+        for(int i=0; i<3; i++) {
+          int ry = (int)pY + i;
+          if (ry < ROWS) drawJewel(BOARD_X + (pX * J_SIZE), (ry * J_SIZE), falling[i], false);
+        }
+      }
+      u8g2.setFont(u8g2_font_4x6_tf);
+      u8g2.drawStr(2, 8, "BUFFER");
+      for(int i=0; i<3; i++) drawJewel(5, 12 + (i * 7), nextJewels[i], false);
+      u8g2.setCursor(92, 10); u8g2.print("NODES");
+      u8g2.setCursor(92, 20); u8g2.print(sessionNodes);
+      u8g2.setCursor(92, 40); u8g2.print("LVL "); u8g2.print(runnerLevel);
+    }
+  } while (u8g2.nextPage());
+}
+
+void setup() {
+  pinMode(BTN_ROTATE, INPUT_PULLUP);
+  pinMode(BTN_DECK, INPUT_PULLUP);
+  pinMode(BTN_B, INPUT_PULLUP);
+  pinMode(BTN_C, INPUT_PULLUP);
+  u8g2.begin();
+  randomSeed(analogRead(A2));
+}
+
+void loop() {
+  updateInput();
+  
+  if (state == PLAYING) {
+    pY += fallSpeed;
+    if ((int)pY + 3 >= ROWS || board[pX][(int)pY+3] != 0) lockAndNew();
+  }
+  else if (state == CLEARING) {
+    if (--clearTimer <= 0) {
+      finalizeClear();
+      applyGravity();
+      if (identifyMatches()) { 
+        clearTimer = 18; 
+        playSfx(1400, 20); 
+      } else {
+        for(int i=0; i<3; i++) falling[i] = nextJewels[i];
+        generateTriple(nextJewels);
+        pX = 2; pY = 0;
+        state = PLAYING;
+        if (board[pX][0] != 0) state = JACK_OUT;
+      }
+    }
+  }
+  else if (state == JACK_OUT) {
+    if (digitalRead(BTN_ROTATE) == LOW) { state = SELECT_CORP; delay(250); }
+  }
+  drawUI();
+}

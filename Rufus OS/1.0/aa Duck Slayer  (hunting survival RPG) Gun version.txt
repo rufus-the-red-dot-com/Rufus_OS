@@ -1,0 +1,132 @@
+#include <Arduino.h>
+#include <U8g2lib.h>
+#include <Wire.h>
+#include <EEPROM.h>
+
+// --- MPU-6050 Constants ---
+const int MPU_ADDR = 0x68; 
+float gyroX, gyroY;
+float sensitivity = 150.0; // HIGHER = Slower movement, LOWER = Faster movement
+
+// SH1106 128x64 I2C
+U8G2_SH1106_128X64_NONAME_1_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+
+// --- PINS ---
+#define PIN_TRIGGER 11 
+#define PIN_MENU    10 
+#define BZ_HIGH      3
+#define BZ_LOW       6
+// STICK_X and STICK_Y removed as we are using I2C now
+
+// --- WORLD CONSTANTS ---
+#define WORLD_WIDTH 1000
+#define ZENITH_LIMIT -280 
+#define GROUND_LIMIT 110  
+#define NUM_STARS 15
+
+// ... [Existing Image Data and Global Variables remains exactly the same] ...
+// [Keep your duck_frame0, duck_frame1, duck_death, and RPG variables here]
+
+// --- NEW: MPU6050 Initialization ---
+void setupMPU() {
+  Wire.begin();
+  Wire.beginTransmission(MPU_ADDR);
+  Wire.write(0x6B); // Power management register
+  Wire.write(0);    // Wake up MPU-6050
+  Wire.endTransmission(true);
+}
+
+// --- UPDATED: readControls using Gyroscope ---
+void readControls() {
+  Wire.beginTransmission(MPU_ADDR);
+  Wire.write(0x43); // Start with Gyro X register
+  Wire.endTransmission(false);
+  Wire.requestFrom(MPU_ADDR, 4, true); // Read 4 bytes (X and Y gyro)
+
+  // Read raw gyro values
+  int16_t rawGyroX = Wire.read() << 8 | Wire.read(); 
+  int16_t rawGyroY = Wire.read() << 8 | Wire.read();
+
+  // Update View based on angular velocity
+  // We use Gyro Y for horizontal (X) and Gyro X for vertical (Y) 
+  // based on how the sensor is usually mounted on a gun.
+  viewX += (rawGyroY / sensitivity); 
+  viewY += (rawGyroX / sensitivity);
+
+  // Wrap World X
+  if (viewX > WORLD_WIDTH / 2) viewX -= WORLD_WIDTH;
+  if (viewX < -WORLD_WIDTH / 2) viewX += WORLD_WIDTH;
+
+  // Constrain Y (Sky/Ground)
+  viewY = constrain(viewY, ZENITH_LIMIT, GROUND_LIMIT + 40); 
+}
+
+// ... [Existing helper functions: playSfx, saveProgress, spawnDuck, checkShot, etc.] ...
+
+void setup() {
+  pinMode(PIN_TRIGGER, INPUT_PULLUP); 
+  pinMode(PIN_MENU, INPUT_PULLUP);
+  
+  u8g2.begin();
+  setupMPU(); // Initialize the motion sensor
+  
+  loadProgress();
+  for(int i=0; i<NUM_STARS; i++) { 
+    starX[i] = random(-500, 500); 
+    starY[i] = random(-200, 80); 
+  }
+}
+
+void loop() {
+  // The rest of your loop logic remains the same!
+  // readControls() now pulls from the MPU6050 instead of A0/A1.
+  
+  static bool lastMenu = HIGH, lastTrig = HIGH;
+  bool curMenu = digitalRead(PIN_MENU) == LOW, curTrig = digitalRead(PIN_TRIGGER) == LOW;
+
+  if (curMenu && !lastMenu) {
+    if (gameState == TITLE) resetProgress();
+    else if (gameState == HUNTING) { gameState = CAMP; menuIdx = 0; }
+    else if (gameState == CAMP) { menuIdx = (menuIdx + 1) % 5; playSfx(600, 20); }
+    delay(50);
+  }
+  lastMenu = curMenu;
+
+  if (gameState == CAMP) {
+    if (curTrig && !lastTrig) {
+      if (menuIdx == 0) { gameState = HUNTING; saveProgress(); }
+      else if (menuIdx == 1 && baggedDucks > 0) { baggedDucks--; hunger = min(100.0, hunger + 35); playSfx(1000, 100); }
+      else if (menuIdx == 2 && baggedDucks > 0) { money += (baggedDucks * (isGolden ? 50 : 15)); baggedDucks = 0; saveProgress(); playSfx(1500, 100); }
+      else if (menuIdx == 3 && money >= 20) { money -= 20; ammo += 10; saveProgress(); playSfx(1800, 100); }
+      else if (menuIdx == 4) isDarkMode = !isDarkMode;
+      delay(150);
+    }
+  }
+  else if (gameState == TITLE || gameState == STARVED) {
+    if (curTrig && !lastTrig) { hunger = 100; ammo = 15; baggedDucks = 0; spawnDuck(); gameState = HUNTING; delay(50); }
+  } 
+  else if (gameState == HUNTING) {
+    readControls(); // Uses MPU6050
+    updateFallingDuck();
+    if (millis() - lastHungerTime > 1500) { hunger -= 0.5; lastHungerTime = millis(); }
+    if (hunger <= 0) { gameState = STARVED; saveProgress(); }
+    float speedMult = 1.0 + (hunterLevel * 0.08); 
+    duckX += (sin(millis() / 500.0) * (2.0 * speedMult)); 
+    if (duckX > WORLD_WIDTH / 2) duckX -= WORLD_WIDTH;
+    if (duckX < -WORLD_WIDTH / 2) duckX += WORLD_WIDTH;
+    duckY -= (0.35 * speedMult); 
+    if (millis() - lastFrameTime > max(40, 200 - (hunterLevel * 5))) { 
+      duckFrame = !duckFrame; lastFrameTime = millis(); 
+      flapCount++; if (flapCount >= 8) { faceRight = !faceRight; flapCount = 0; }
+    }
+    if (curTrig && !lastTrig) checkShot();
+    if (duckY < ZENITH_LIMIT - 60) { gameState = MISS; }
+  } 
+  else if (gameState == MISS) {
+    readControls(); 
+    updateFallingDuck();
+    if (millis() - lastHungerTime > 1500) { hunger -= 0.5; lastHungerTime = millis(); }
+    if (duckY < ZENITH_LIMIT - 200) spawnDuck(); 
+  }
+  lastTrig = curTrig; drawUI();
+}

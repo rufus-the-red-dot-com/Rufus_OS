@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cyber Runner: Casino Update</title>
+    <style>
+        body { margin: 0; background: #050505; color: #00ff41; font-family: 'Courier New', Courier, monospace; overflow: hidden; }
+        #game-container { position: relative; width: 100vw; height: 100vh; }
+        canvas { display: block; image-rendering: pixelated; }
+        #ui { position: absolute; top: 10px; left: 10px; pointer-events: none; }
+        .stat { margin-bottom: 5px; text-shadow: 2px 2px #000; }
+        #casino-overlay { 
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            background: rgba(10, 10, 15, 0.95); border: 2px solid #00ff41;
+            padding: 20px; display: none; text-align: center; width: 400px;
+        }
+        .card-area { display: flex; justify-content: center; gap: 10px; margin: 20px 0; min-height: 80px; }
+        .card { background: #fff; color: #000; padding: 10px; border-radius: 4px; font-weight: bold; width: 40px; }
+        button { background: #00ff41; color: #000; border: none; padding: 10px 20px; cursor: pointer; font-family: inherit; font-weight: bold; }
+        button:disabled { background: #004411; }
+    </style>
+</head>
+<body>
+
+<div id="game-container">
+    <div id="ui">
+        <div class="stat">RUNNER: STEVEN</div>
+        <div class="stat">NUYEN: <span id="nuyen">500</span></div>
+        <div class="stat">DEBT: <span id="debt">5000</span></div>
+        <div class="stat">ZONE: SLUMS / CASINO ENTRANCE</div>
+    </div>
+
+    <div id="casino-overlay">
+        <h2>--- CASINO BLACKJACK ---</h2>
+        <div id="casino-msg">Wanna clear that debt with Jake? Bet 50 Nuyen.</div>
+        <div class="card-area" id="dealer-cards"></div>
+        <div style="font-size: 0.8em;">DEALER</div>
+        <hr border="1" color="#00ff41">
+        <div style="font-size: 0.8em;">PLAYER</div>
+        <div class="card-area" id="player-cards"></div>
+        <div id="controls">
+            <button onclick="startHand()">DEAL (50¥)</button>
+            <button id="hit-btn" onclick="hit()" disabled>HIT</button>
+            <button id="stay-btn" onclick="stay()" disabled>STAY</button>
+            <button onclick="closeCasino()">EXIT</button>
+        </div>
+    </div>
+    
+    <canvas id="gameCanvas"></canvas>
+</div>
+
+<script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+
+    let player = { x: 100, y: 100, size: 20, nuyen: 500, debt: 5000 };
+    let keys = {};
+    let casinoEntry = { x: 400, y: 300, w: 100, h: 100 };
+
+    window.addEventListener('keydown', e => keys[e.code] = true);
+    window.addEventListener('keyup', e => keys[e.code] = false);
+
+    // --- CASINO LOGIC ---
+    let deck = [];
+    let playerHand = [];
+    let dealerHand = [];
+    let inHand = false;
+
+    function createDeck() {
+        const suits = ['H', 'D', 'C', 'S'];
+        const values = ['2','3','4','5','6','7','8','9','10','J','Q','K','A'];
+        deck = [];
+        for(let s of suits) for(let v of values) deck.push(v);
+        deck.sort(() => Math.random() - 0.5);
+    }
+
+    function getVal(hand) {
+        let val = 0, aces = 0;
+        for(let c of hand) {
+            if(['J','Q','K'].includes(c)) val += 10;
+            else if(c === 'A') { val += 11; aces++; }
+            else val += parseInt(c);
+        }
+        while(val > 21 && aces > 0) { val -= 10; aces--; }
+        return val;
+    }
+
+    function startHand() {
+        if(player.nuyen < 50) return alert("Not enough Nuyen!");
+        player.nuyen -= 50;
+        updateUI();
+        createDeck();
+        playerHand = [deck.pop(), deck.pop()];
+        dealerHand = [deck.pop()];
+        inHand = true;
+        document.getElementById('hit-btn').disabled = false;
+        document.getElementById('stay-btn').disabled = false;
+        renderCasino();
+    }
+
+    function hit() {
+        playerHand.push(deck.pop());
+        if(getVal(playerHand) > 21) endHand("Bust! Dealer wins.");
+        renderCasino();
+    }
+
+    function stay() {
+        while(getVal(dealerHand) < 17) dealerHand.push(deck.pop());
+        let pV = getVal(playerHand), dV = getVal(dealerHand);
+        if(dV > 21 || pV > dV) {
+            player.nuyen += 100;
+            player.debt -= 100;
+            endHand("You win! 100¥ credited to debt.");
+        } else if (pV === dV) endHand("Push.");
+        else endHand("Dealer wins.");
+    }
+
+    function endHand(msg) {
+        document.getElementById('casino-msg').innerText = msg;
+        document.getElementById('hit-btn').disabled = true;
+        document.getElementById('stay-btn').disabled = true;
+        inHand = false;
+        updateUI();
+        renderCasino();
+    }
+
+    function renderCasino() {
+        const pArea = document.getElementById('player-cards');
+        const dArea = document.getElementById('dealer-cards');
+        pArea.innerHTML = playerHand.map(c => `<div class="card">${c}</div>`).join('');
+        dArea.innerHTML = dealerHand.map(c => `<div class="card">${c}</div>`).join('');
+    }
+
+    function updateUI() {
+        document.getElementById('nuyen').innerText = player.nuyen;
+        document.getElementById('debt').innerText = player.debt;
+    }
+
+    function closeCasino() {
+        document.getElementById('casino-overlay').style.display = 'none';
+        player.y += 50; // Move away from door
+    }
+
+    // --- ENGINE ---
+    function update() {
+        if(document.getElementById('casino-overlay').style.display === 'block') return;
+
+        if(keys['KeyW']) player.y -= 3;
+        if(keys['KeyS']) player.y += 3;
+        if(keys['KeyA']) player.x -= 3;
+        if(keys['KeyD']) player.x += 3;
+
+        // Collision with Casino Door
+        if(player.x > casinoEntry.x && player.x < casinoEntry.x + casinoEntry.w &&
+           player.y > casinoEntry.y && player.y < casinoEntry.y + casinoEntry.h) {
+            document.getElementById('casino-overlay').style.display = 'block';
+        }
+    }
+
+    function draw() {
+        ctx.fillStyle = '#050505';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        // Draw Grid
+        ctx.strokeStyle = '#002200';
+        for(let i=0; i<canvas.width; i+=40) {
+            ctx.beginPath(); ctx.moveTo(i,0); ctx.lineTo(i,canvas.height); ctx.stroke();
+        }
+        for(let i=0; i<canvas.height; i+=40) {
+            ctx.beginPath(); ctx.moveTo(0,i); ctx.lineTo(canvas.width,i); ctx.stroke();
+        }
+
+        // Casino Entrance
+        ctx.fillStyle = '#ff00ff';
+        ctx.fillRect(casinoEntry.x, casinoEntry.y, casinoEntry.w, casinoEntry.h);
+        ctx.fillStyle = '#fff';
+        ctx.fillText("CASINO - JACK IN", casinoEntry.x + 5, casinoEntry.y + 50);
+
+        // Player
+        ctx.fillStyle = '#00ff41';
+        ctx.fillRect(player.x, player.y, player.size, player.size);
+        
+        requestAnimationFrame(() => {
+            update();
+            draw();
+        });
+    }
+
+    draw();
+</script>
+</body>
+</html>

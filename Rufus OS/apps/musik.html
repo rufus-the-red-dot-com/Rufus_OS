@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Nano-Synth: Accurate Chromatic Tracker</title>
+    <style>
+        :root { --neon: #00ff41; --bg: #0d0d0d; --grid: #1a1a1a; }
+        body { 
+            background: var(--bg); color: var(--neon); font-family: 'Courier New', monospace; 
+            margin: 0; height: 100vh; display: flex; flex-direction: column; overflow: hidden; 
+        }
+        
+        .panel { 
+            background: #111; padding: 12px; border-bottom: 2px solid var(--neon); 
+            display: flex; gap: 20px; align-items: center; z-index: 1000; flex-shrink: 0;
+        }
+        
+        .editor-wrapper { 
+            flex: 1; overflow: auto; background: #050505; display: flex; position: relative; 
+        }
+        
+        /* The Keyboard */
+        .keyboard { 
+            position: sticky; left: 0; z-index: 500; background: #000; 
+            display: flex; flex-direction: column; width: 120px; flex-shrink: 0;
+        }
+        .key { 
+            height: 30px; border-bottom: 1px solid #333; display: flex; 
+            align-items: center; justify-content: flex-end; padding-right: 10px; 
+            font-size: 11px; cursor: pointer; border-right: 3px solid var(--neon);
+            box-sizing: border-box;
+        }
+        /* Piano Styling */
+        .white { background: #fff; color: #000; font-weight: bold; }
+        .black { background: #222; color: #fff; width: 85px; border-right-color: #555; }
+        .key:active { background: var(--neon) !important; color: #000; }
+
+        /* The Grid */
+        .grid-container { display: flex; flex-direction: column; flex-shrink: 0; }
+        .row { display: flex; height: 30px; border-bottom: 1px solid #111; box-sizing: border-box; }
+        .cell { 
+            min-width: 40px; border-right: 1px solid #222; cursor: pointer; 
+            background: rgba(255,255,255,0.02); box-sizing: border-box;
+        }
+        
+        .cell:nth-child(4n) { border-right: 2px solid #444; }
+        .cell:nth-child(16n) { border-right: 2px solid var(--neon); }
+        .cell.active { background: var(--neon); box-shadow: inset 0 0 10px #000; }
+        .cell.playing { background: rgba(255, 255, 255, 0.3); }
+
+        .footer { background: #111; padding: 10px; border-top: 1px solid #333; flex-shrink: 0; }
+        textarea { width: 100%; height: 100px; background: #000; color: var(--neon); border: 1px solid #444; font-size: 11px; }
+        
+        button, select, input { 
+            background: #000; color: var(--neon); border: 1px solid var(--neon); 
+            padding: 6px 12px; cursor: pointer; font-family: inherit; font-weight: bold; 
+        }
+        button:hover { background: var(--neon); color: #000; }
+    </style>
+</head>
+<body>
+
+    <div class="panel">
+        <button onclick="togglePlayback()" id="playBtn">▶ START</button>
+        <button onclick="clearGrid()">CLEAR</button>
+        <button onclick="exportCode()" style="background: #004400;">EXPORT NANO CODE</button>
+        <span>BPM: <input type="number" id="bpm" value="120" style="width:60px;"></span>
+        <span>WAVE: 
+            <select id="waveType">
+                <option value="square">SQUARE</option>
+                <option value="sawtooth">SAWTOOTH</option>
+            </select>
+        </span>
+    </div>
+
+    <div class="editor-wrapper">
+        <div class="keyboard" id="kb"></div>
+        <div class="grid-container" id="gr"></div>
+    </div>
+
+    <div class="footer">
+        <textarea id="output" readonly placeholder="// C++ Code..."></textarea>
+    </div>
+
+<script>
+    const STEPS = 64;
+    // Strictly Chromatic Semitones
+    const CHROMATIC = ["C", "B", "Bb", "A", "Ab", "G", "Gb", "F", "E", "Eb", "D", "Db"];
+    const NOTES = [];
+    
+    // Generate Exactly 3 Octaves (C5 down to C2)
+    for(let oct=5; oct>=2; oct--) {
+        CHROMATIC.forEach(name => {
+            // Frequency calculation based on A4 = 440
+            const names = ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"];
+            const semitoneIndex = names.indexOf(name.replace('b', 'b'));
+            const n = semitoneIndex + (oct * 12);
+            const freq = Math.round(440 * Math.pow(2, (n - 69) / 12));
+            
+            NOTES.push({ n: name + oct, f: freq, b: name.includes('b') });
+        });
+    }
+
+    let gridState = Array(NOTES.length).fill().map(() => Array(STEPS).fill(false));
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    let isPlaying = false, currentStep = 0, nextStepTime = 0, timer = null;
+
+    function playTone(freq, dur) {
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+        const osc = audioCtx.createOscillator();
+        const g = audioCtx.createGain();
+        osc.type = document.getElementById('waveType').value;
+        osc.frequency.value = freq;
+        g.gain.setValueAtTime(0.1, audioCtx.currentTime);
+        g.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + dur);
+        osc.connect(g); g.connect(audioCtx.destination);
+        osc.start(); osc.stop(audioCtx.currentTime + dur);
+    }
+
+    function init() {
+        const kb = document.getElementById('kb');
+        const gr = document.getElementById('gr');
+        NOTES.forEach((note, r) => {
+            const k = document.createElement('div');
+            k.className = `key ${note.b ? 'black' : 'white'}`;
+            k.innerText = note.n;
+            k.onclick = () => playTone(note.f, 0.4);
+            kb.appendChild(k);
+
+            const row = document.createElement('div');
+            row.className = 'row';
+            for(let c=0; c<STEPS; c++) {
+                const cell = document.createElement('div');
+                cell.className = 'cell';
+                if(gridState[r][c]) cell.classList.add('active');
+                cell.onclick = () => {
+                    gridState[r][c] = !gridState[r][c];
+                    cell.classList.toggle('active');
+                    if(gridState[r][c]) playTone(note.f, 0.2);
+                };
+                row.appendChild(cell);
+            }
+            gr.appendChild(row);
+        });
+    }
+
+    function scheduleStep(step, time) {
+        const stepTime = (60 / document.getElementById('bpm').value) / 4;
+        NOTES.forEach((note, r) => {
+            if (gridState[r][step]) {
+                const prev = step > 0 ? gridState[r][step-1] : gridState[r][STEPS-1];
+                if (!prev || step === 0) {
+                    let h = 1;
+                    while(gridState[r][(step+h)%STEPS] && (step + h) < STEPS) h++;
+                    const osc = audioCtx.createOscillator();
+                    const g = audioCtx.createGain();
+                    osc.type = document.getElementById('waveType').value;
+                    osc.frequency.value = note.f;
+                    g.gain.setValueAtTime(0.1, time);
+                    g.gain.linearRampToValueAtTime(0, time + (stepTime * h));
+                    osc.connect(g); g.connect(audioCtx.destination);
+                    osc.start(time); osc.stop(time + (stepTime * h));
+                }
+            }
+        });
+        setTimeout(() => {
+            document.querySelectorAll('.cell.playing').forEach(c => c.classList.remove('playing'));
+            const cells = document.querySelectorAll(`.row div:nth-child(${step+1})`);
+            cells.forEach(c => c.classList.add('playing'));
+        }, (time - audioCtx.currentTime) * 1000);
+    }
+
+    function scheduler() {
+        while (nextStepTime < audioCtx.currentTime + 0.1) {
+            scheduleStep(currentStep, nextStepTime);
+            nextStepTime += (60 / document.getElementById('bpm').value) / 4;
+            currentStep = (currentStep + 1) % STEPS;
+        }
+        timer = setTimeout(scheduler, 25);
+    }
+
+    function togglePlayback() {
+        isPlaying = !isPlaying;
+        if(isPlaying) { currentStep = 0; nextStepTime = audioCtx.currentTime + 0.05; scheduler(); } 
+        else { clearTimeout(timer); }
+        document.getElementById('playBtn').innerText = isPlaying ? "■ STOP" : "▶ START";
+    }
+
+    function exportCode() {
+        let m = []; let b = [];
+        for(let c=0; c<STEPS; c++) {
+            let col = []; NOTES.forEach((n, r) => { if(gridState[r][c]) col.push(n.f); });
+            m.push(col[0] || 0); b.push(col[1] || 0);
+        }
+        document.getElementById('output').value = `const int melody[] PROGMEM = {${m.join(',')}};\nconst int bass[] PROGMEM = {${b.join(',')}};`;
+    }
+
+    function clearGrid() {
+        gridState = Array(NOTES.length).fill().map(() => Array(STEPS).fill(false));
+        document.querySelectorAll('.cell.active').forEach(c => c.classList.remove('active'));
+    }
+
+    init();
+</script>
+</body>
+</html>

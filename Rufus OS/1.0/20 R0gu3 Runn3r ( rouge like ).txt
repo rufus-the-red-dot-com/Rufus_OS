@@ -1,0 +1,433 @@
+#include <Arduino.h>
+#include <U8g2lib.h>
+#include <Wire.h>
+
+// SH1106 128x64 I2C
+U8G2_SH1106_128X64_NONAME_1_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+
+// --- PIN DEFINITIONS ---
+#define STICK_X    A0
+#define STICK_Y    A1
+#define BTN_ACT    11 // Action / Wait (Heal)
+#define BTN_MENU   10 // Menu / Stats Toggle
+#define BTN_INV    9  // Light/Dark Mode Toggle
+#define BTN_SCAN   5  // Zoom Toggle (Formerly Scan)
+#define BZ_OUT     3  
+
+// --- GAME CONSTANTS ---
+#define MAP_W 16
+#define MAP_H 8
+#define TILE_SIZE 8
+#define OFFSET_X 0
+#define OFFSET_Y 0
+
+// --- TILE TYPES ---
+#define T_EMPTY  0
+#define T_WALL   1
+#define T_FLOOR  2
+#define T_EXIT   3
+#define T_ENEMY  4
+#define T_ITEM   5
+
+// --- ENUMS ---
+enum GameState { TITLE, EXPLORE, COMBAT, LEVEL_UP, GAMEOVER, MENU };
+
+// --- ENTITY STRUCTURE ---
+struct Entity {
+  int x, y;
+  int hp, maxHp;
+  int atk, def;
+  bool active;
+};
+
+// --- GLOBAL STATE ---
+byte gameMap[MAP_W][MAP_H];
+bool discovered[MAP_W][MAP_H];
+GameState state = TITLE;
+GameState prevState = EXPLORE; 
+Entity player = {0, 0, 35, 35, 6, 3, true}; 
+Entity enemies[4];
+
+bool isInverted = false;
+bool isZoomed = false; // Zoom state
+int xp = 0;
+int xpNeeded = 50;
+int pLevel = 1;
+int depth = 1;
+char logMsg[20] = "JACKED IN.";
+
+// --- AUDIO SYSTEM ---
+void playSfx(int f, int d) { tone(BZ_OUT, f, d); }
+
+void playStartMusic() {
+  playSfx(440, 100); delay(100);
+  playSfx(554, 100); delay(100);
+  playSfx(659, 100); delay(100);
+  playSfx(880, 200);
+}
+
+void playLevelMusic() {
+  playSfx(330, 80); delay(80);
+  playSfx(440, 80); delay(80);
+  playSfx(554, 150);
+}
+
+void playLevelUpMusic() {
+  playSfx(523, 60); delay(60);
+  playSfx(659, 60); delay(60);
+  playSfx(784, 60); delay(60);
+  playSfx(1046, 200);
+}
+
+void generateLevel() {
+  for(int x=0; x<MAP_W; x++) {
+    for(int y=0; y<MAP_H; y++) {
+      gameMap[x][y] = T_WALL;
+      discovered[x][y] = false;
+    }
+  }
+
+  int prevCX = -1;
+  int prevCY = -1;
+
+  int roomCount = random(3, 5);
+  for(int r=0; r<roomCount; r++) {
+    int rw = random(3, 6);
+    int rh = random(3, 5);
+    int rx = random(1, MAP_W - rw - 1);
+    int ry = random(1, MAP_H - rh - 1);
+
+    for(int x=rx; x<rx+rw; x++) {
+      for(int y=ry; y<ry+rh; y++) {
+        gameMap[x][y] = T_FLOOR;
+      }
+    }
+
+    int cx = rx + rw / 2;
+    int cy = ry + rh / 2;
+
+    if (prevCX != -1) {
+      for (int x = min(prevCX, cx); x <= max(prevCX, cx); x++) gameMap[x][prevCY] = T_FLOOR;
+      for (int y = min(prevCY, cy); y <= max(prevCY, cy); y++) gameMap[cx][y] = T_FLOOR;
+    }
+
+    if(r == 0) { player.x = cx; player.y = cy; }
+    if(r == roomCount - 1) { gameMap[rx+1][ry+1] = T_EXIT; }
+    prevCX = cx; prevCY = cy;
+  }
+  
+  for(int i=0; i<4; i++) {
+    int ex, ey;
+    do {
+      ex = random(1, MAP_W-1);
+      ey = random(1, MAP_H-1);
+    } while(gameMap[ex][ey] != T_FLOOR || (abs(ex - player.x) + abs(ey - player.y) < 4));
+    
+    enemies[i] = {ex, ey, 8 + (depth*3), 8 + (depth*3), 3 + depth, depth/2, true};
+  }
+}
+
+void revealMap(int range) {
+  for(int x = player.x-range; x <= player.x+range; x++) {
+    for(int y = player.y-range; y <= player.y+range; y++) {
+      if(x >= 0 && x < MAP_W && y >= 0 && y < MAP_H) discovered[x][y] = true;
+    }
+  }
+}
+
+void updateEnemies() {
+  for(int i=0; i<4; i++) {
+    if(!enemies[i].active) continue;
+
+    int dist = abs(enemies[i].x - player.x) + abs(enemies[i].y - player.y);
+    if(dist > 8 && random(0, 10) > 4) continue; 
+
+    int dx = 0;
+    int dy = 0;
+
+    if(random(0, 10) > 3) { 
+      if(enemies[i].x < player.x) dx = 1;
+      else if(enemies[i].x > player.x) dx = -1;
+      else if(enemies[i].y < player.y) dy = 1;
+      else if(enemies[i].y > player.y) dy = -1;
+    }
+
+    int nx = enemies[i].x + dx;
+    int ny = enemies[i].y + dy;
+
+    if(nx < 0 || nx >= MAP_W || ny < 0 || ny >= MAP_H) continue;
+    if(gameMap[nx][ny] == T_WALL || gameMap[nx][ny] == T_EXIT) continue;
+
+    if(nx == player.x && ny == player.y) {
+      if (random(0, 10) > 1) {
+        int dmgToPlayer = max(1, enemies[i].atk - player.def + random(-1, 2));
+        player.hp -= dmgToPlayer;
+        strcpy(logMsg, "HIT! -");
+        itoa(dmgToPlayer, logMsg + 6, 10);
+        playSfx(150, 60);
+      } else {
+        strcpy(logMsg, "EVADED!");
+      }
+      
+      if(player.hp <= 0) state = GAMEOVER;
+    } else {
+      bool occupied = false;
+      for(int j=0; j<4; j++) {
+        if(i != j && enemies[j].active && enemies[j].x == nx && enemies[j].y == ny) {
+          occupied = true; break;
+        }
+      }
+      if(!occupied) { enemies[i].x = nx; enemies[i].y = ny; }
+    }
+  }
+}
+
+void fight(int index) {
+  int dmgToEnemy = max(1, player.atk - enemies[index].def + random(0, 3));
+  enemies[index].hp -= dmgToEnemy;
+  
+  if(enemies[index].hp <= 0) {
+    enemies[index].active = false;
+    xp += 25;
+    strcpy(logMsg, "NODE PURGED");
+    playSfx(900, 40);
+  } else {
+    strcpy(logMsg, "ATTACKING...");
+    playSfx(500, 30);
+  }
+  
+  if(xp >= xpNeeded) {
+    state = LEVEL_UP;
+    playLevelUpMusic();
+  }
+}
+
+void rest() {
+  if (player.hp < player.maxHp) {
+    int healAmt = 6 + (pLevel); 
+    player.hp = min(player.maxHp, player.hp + healAmt);
+    strcpy(logMsg, "REPAIR +");
+    itoa(healAmt, logMsg + 8, 10);
+    playSfx(400, 50);
+  } else {
+    strcpy(logMsg, "SIG OPTIMAL");
+  }
+  updateEnemies();
+}
+
+void movePlayer(int dx, int dy) {
+  int nx = player.x + dx;
+  int ny = player.y + dy;
+
+  if(nx < 0 || nx >= MAP_W || ny < 0 || ny >= MAP_H) return;
+  if(gameMap[nx][ny] == T_WALL) return;
+
+  bool hitEnemy = false;
+  for(int i=0; i<4; i++) {
+    if(enemies[i].active && enemies[i].x == nx && enemies[i].y == ny) {
+      fight(i);
+      hitEnemy = true;
+      break;
+    }
+  }
+
+  if(!hitEnemy) {
+    if(gameMap[nx][ny] == T_EXIT) {
+      depth++;
+      generateLevel();
+      strcpy(logMsg, "DATA UPLOADED");
+      playLevelMusic();
+      revealMap(2);
+      return;
+    }
+    player.x = nx;
+    player.y = ny;
+  }
+
+  revealMap(2);
+  updateEnemies();
+}
+
+// --- DRAWING ---
+void applyInversion() {
+  if (isInverted) {
+    u8g2.setDrawColor(1);
+    u8g2.drawBox(0, 0, 128, 64);
+    u8g2.setDrawColor(0);
+  } else {
+    u8g2.setDrawColor(1);
+  }
+}
+
+void drawExplore() {
+  u8g2.firstPage();
+  
+  // Calculate view parameters based on zoom
+  int curTS = isZoomed ? 16 : 8;
+  // Center camera on player if zoomed. Area is 128x48 (excluding HUD).
+  int camX = isZoomed ? (64 - (player.x * curTS + curTS/2)) : 0;
+  int camY = isZoomed ? (24 - (player.y * curTS + curTS/2)) : 0;
+
+  do {
+    applyInversion();
+    
+    // Render Map
+    for(int x=0; x<MAP_W; x++) {
+      for(int y=0; y<MAP_H; y++) {
+        if(!discovered[x][y]) continue;
+        int px = x * curTS + camX;
+        int py = y * curTS + camY;
+        
+        // Culling
+        if(px > -curTS && px < 128 && py > -curTS && py < 48) {
+          if(gameMap[x][y] == T_WALL) u8g2.drawFrame(px, py, curTS, curTS);
+          if(gameMap[x][y] == T_EXIT) u8g2.drawBox(px + curTS/4, py + curTS/4, curTS/2, curTS/2);
+        }
+      }
+    }
+
+    // Render Enemies
+    for(int i=0; i<4; i++) {
+      if(enemies[i].active && discovered[enemies[i].x][enemies[i].y]) {
+        int ex = enemies[i].x * curTS + camX + curTS/2;
+        int ey = enemies[i].y * curTS + camY + curTS/2;
+        if(ex > 0 && ex < 128 && ey > 0 && ey < 48) {
+          u8g2.drawDisc(ex, ey, curTS/4);
+        }
+      }
+    }
+
+    // Render Player
+    int pX = player.x * curTS + camX + curTS/4;
+    int pY = player.y * curTS + camY + curTS/4;
+    if(pX > -curTS && pX < 128 && pY > -curTS && pY < 48) {
+      u8g2.drawBox(pX, pY, curTS/2, curTS/2);
+    }
+
+    // Static UI Panel (Bottom)
+    u8g2.drawHLine(0, 64-16, 128);
+    u8g2.setFont(u8g2_font_4x6_tf);
+    u8g2.setCursor(2, 62); u8g2.print("HP:"); u8g2.print(player.hp);
+    u8g2.setCursor(35, 62); u8g2.print("XP:"); u8g2.print(xp);
+    u8g2.setCursor(65, 62); u8g2.print("D:"); u8g2.print(depth);
+    u8g2.setCursor(90, 62); u8g2.print(logMsg);
+
+  } while (u8g2.nextPage());
+}
+
+void handleInput() {
+  static unsigned long lastMove = 0;
+  if(millis() - lastMove < 200) return;
+
+  if(digitalRead(BTN_INV) == LOW) {
+    isInverted = !isInverted;
+    playSfx(600, 30);
+    lastMove = millis();
+    return;
+  }
+
+  if(state == TITLE) {
+    if(digitalRead(BTN_ACT) == LOW) { 
+      player.hp = player.maxHp = 35; player.atk = 6; player.def = 3;
+      state = EXPLORE; generateLevel(); revealMap(2); 
+      playStartMusic();
+      lastMove = millis(); 
+    }
+    return;
+  }
+
+  if(state == MENU) {
+    if(digitalRead(BTN_MENU) == LOW) { state = EXPLORE; lastMove = millis(); }
+    return;
+  }
+
+  if(state == LEVEL_UP) {
+    int sy = analogRead(STICK_Y);
+    if(sy < 300) { player.atk += 3; xp -= xpNeeded; xpNeeded += 60; pLevel++; state = EXPLORE; lastMove = millis(); }
+    if(sy > 700) { player.maxHp += 15; player.hp = player.maxHp; xp -= xpNeeded; xpNeeded += 60; pLevel++; state = EXPLORE; lastMove = millis(); }
+    return;
+  }
+
+  if(state == GAMEOVER) {
+    if(digitalRead(BTN_ACT) == LOW) { state = TITLE; depth = 1; xp = 0; lastMove = millis(); }
+    return;
+  }
+
+  if(digitalRead(BTN_MENU) == LOW) {
+    state = MENU;
+    lastMove = millis();
+    return;
+  }
+
+  if(digitalRead(BTN_SCAN) == LOW) {
+    isZoomed = !isZoomed;
+    strcpy(logMsg, isZoomed ? "ZOOM IN" : "ZOOM OUT");
+    playSfx(1200, 50);
+    lastMove = millis();
+    return;
+  }
+
+  if(digitalRead(BTN_ACT) == LOW) {
+    rest();
+    lastMove = millis();
+    return;
+  }
+
+  int sx = analogRead(STICK_X);
+  int sy = analogRead(STICK_Y);
+
+  if(sx < 300) { movePlayer(-1, 0); lastMove = millis(); }
+  else if(sx > 700) { movePlayer(1, 0); lastMove = millis(); }
+  else if(sy < 300) { movePlayer(0, -1); lastMove = millis(); }
+  else if(sy > 700) { movePlayer(0, 1); lastMove = millis(); }
+}
+
+void setup() {
+  pinMode(BTN_ACT, INPUT_PULLUP);
+  pinMode(BTN_MENU, INPUT_PULLUP);
+  pinMode(BTN_INV, INPUT_PULLUP);
+  pinMode(BTN_SCAN, INPUT_PULLUP);
+  u8g2.begin();
+  randomSeed(analogRead(A2));
+}
+
+void loop() {
+  handleInput();
+  
+  if(state == EXPLORE) {
+    drawExplore();
+  }
+  else if(state == TITLE) {
+    u8g2.firstPage(); do { 
+      applyInversion();
+      u8g2.setFont(u8g2_font_7x14_tf); u8g2.drawStr(20, 30, "R0Gu3 RUNN3R"); 
+      u8g2.setFont(u8g2_font_10x20_tf); u8g2.drawStr(22, 50, "J4CK 1N"); 
+    } while(u8g2.nextPage());
+  }
+  else if(state == LEVEL_UP) {
+    u8g2.firstPage(); do { 
+      applyInversion();
+      u8g2.setFont(u8g2_font_6x12_tf); u8g2.drawStr(10, 20, "NODE UPGRADE:"); 
+      u8g2.drawStr(10, 40, "UP: +OVERCLOCK (ATK)");
+      u8g2.drawStr(10, 55, "DN: +SIGNAL (MAX HP)");
+    } while(u8g2.nextPage());
+  }
+  else if(state == MENU) {
+    u8g2.firstPage(); do { 
+      applyInversion();
+      u8g2.setFont(u8g2_font_6x12_tf); u8g2.drawStr(5, 15, "--- SYSTEM STATS ---");
+      u8g2.setFont(u8g2_font_5x7_tf);
+      u8g2.setCursor(5, 30); u8g2.print("ATK POWER: "); u8g2.print(player.atk);
+      u8g2.setCursor(5, 40); u8g2.print("ARMOR CLS: "); u8g2.print(player.def);
+      u8g2.setCursor(5, 50); u8g2.print("USER LVL:  "); u8g2.print(pLevel);
+      u8g2.drawStr(5, 62, "EXIT [D10]");
+    } while(u8g2.nextPage());
+  }
+  else if(state == GAMEOVER) {
+    u8g2.firstPage(); do { 
+      applyInversion();
+      u8g2.setFont(u8g2_font_7x14_tf); u8g2.drawStr(25, 35, "J4CK3D 0U7"); 
+      u8g2.setFont(u8g2_font_4x6_tf); u8g2.drawStr(30, 50, "700 B4D CHUMM3R");
+    } while(u8g2.nextPage());
+  }
+}

@@ -1,0 +1,278 @@
+#include <Arduino.h>
+#include <U8g2lib.h>
+#include <Wire.h>
+
+// SH1106 128x64 I2C
+U8G2_SH1106_128X64_NONAME_1_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+
+// --- PIN DEFINITIONS ---
+#define STICK_X    A0
+#define STICK_Y    A1
+#define BTN_START  2  
+#define BZ_SFX     3  
+
+// --- GAME CONSTANTS ---
+#define TILE_SIZE  4
+#define MAZE_W     28
+#define MAZE_H     14
+#define OFFSET_X   8
+#define OFFSET_Y   4  
+
+// --- MAZE DATA (1: Wall, 0: Pellet, 2: Empty, 3: Power Pellet) ---
+uint8_t maze[MAZE_H][MAZE_W] = {
+  {1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1},
+  {1,3,0,0,0,0,0,0,0,0,0,0,0,1,1,0,0,0,0,0,0,0,0,0,0,0,3,1},
+  {1,0,1,1,1,1,0,1,1,1,1,1,0,1,1,0,1,1,1,1,1,0,1,1,1,1,0,1},
+  {1,0,1,1,1,1,0,1,1,1,1,1,0,1,1,0,1,1,1,1,1,0,1,1,1,1,0,1},
+  {1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1},
+  {1,0,1,1,1,1,0,1,1,0,1,1,1,1,1,1,1,1,0,1,1,0,1,1,1,1,0,1},
+  {1,0,0,0,0,0,0,1,1,0,0,0,0,1,1,0,0,0,0,1,1,0,0,0,0,0,0,1},
+  {1,1,1,1,1,1,0,1,1,1,1,1,2,1,1,2,1,1,1,1,1,0,1,1,1,1,1,1},
+  {1,1,1,1,1,1,0,1,1,2,2,2,2,2,2,2,2,2,2,1,1,0,1,1,1,1,1,1},
+  {1,0,0,0,0,0,0,0,0,2,1,1,1,2,2,1,1,1,2,0,0,0,0,0,0,0,0,1},
+  {1,0,1,1,1,1,0,1,1,0,1,1,1,1,1,1,1,1,0,1,1,0,1,1,1,1,0,1},
+  {1,0,0,0,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,0,0,0,1},
+  {1,3,1,0,0,0,0,1,1,1,1,1,0,1,1,0,1,1,1,1,1,0,0,0,0,1,3,1},
+  {1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1}
+};
+
+// --- ENTITY STATE ---
+struct Entity {
+  float x, y;
+  int dir;    // 0:None, 1:Up, 2:Right, 3:Down, 4:Left
+  int nextDir;
+  float speed;
+};
+
+enum State { TITLE, PLAYING, WON, GAMEOVER };
+State gameState = TITLE;
+
+Entity pacman;
+Entity ghosts[3];
+
+int score = 0;
+int pelletsLeft = 0;
+int lives = 3;
+unsigned long powerTimer = 0;
+bool isPowered = false;
+
+// --- AUDIO ---
+void playSound(int type) {
+  if (type == 0) tone(BZ_SFX, 500, 20); // Eat
+  if (type == 1) tone(BZ_SFX, 150, 200); // Die
+  if (type == 2) tone(BZ_SFX, 800, 50); // Power up
+}
+
+// --- LOGIC ---
+bool isWall(int x, int y) {
+  if (x < 0 || x >= MAZE_W || y < 0 || y >= MAZE_H) return true;
+  return maze[y][x] == 1;
+}
+
+void resetLevel() {
+  // Speed adjusted to be faster but still grid-aligned (0.2 is 1/5 of a tile)
+  pacman = {1.5, 11.5, 0, 0, 0.2}; 
+  ghosts[0] = {12.5, 8.5, 2, 0, 0.1};
+  ghosts[1] = {13.5, 4.5, 4, 0, 0.1};
+  ghosts[2] = {15.5, 1.5, 2, 0, 0.1};
+  isPowered = false;
+  powerTimer = 0;
+}
+
+void initGame() {
+  score = 0;
+  lives = 3;
+  pelletsLeft = 0;
+  for(int y=0; y<MAZE_H; y++) {
+    for(int x=0; x<MAZE_W; x++) {
+      if(maze[y][x] == 2) maze[y][x] = 0; 
+      if(maze[y][x] == 0 || maze[y][x] == 3) pelletsLeft++;
+    }
+  }
+  resetLevel();
+  gameState = PLAYING;
+}
+
+// Target-seeking logic for ghosts
+int getBestDir(int tx, int ty, int targetX, int targetY, int currentDir) {
+  int bestDir = currentDir;
+  float minDist = 10000;
+  
+  int dirs[4][2] = {{0,-1}, {1,0}, {0,1}, {-1,0}}; // Up, Right, Down, Left
+  int oppDir[5] = {0, 3, 4, 1, 2}; // Mapping for opposite directions
+
+  for (int i = 0; i < 4; i++) {
+    int dirId = i + 1;
+    // Ghosts cannot reverse direction unless stuck
+    if (dirId == oppDir[currentDir]) continue;
+    
+    int nx = tx + dirs[i][0];
+    int ny = ty + dirs[i][1];
+    
+    if (!isWall(nx, ny)) {
+      float d = sq(nx - targetX) + sq(ny - targetY);
+      if (d < minDist) {
+        minDist = d;
+        bestDir = dirId;
+      }
+    }
+  }
+  return bestDir;
+}
+
+void moveEntity(Entity &e, bool isPlayer, int targetX = 0, int targetY = 0) {
+  int tx = (int)e.x;
+  int ty = (int)e.y;
+  float fx = e.x - tx;
+  float fy = e.y - ty;
+
+  // Logic triggers at tile center
+  if (abs(fx - 0.5) < 0.08 && abs(fy - 0.5) < 0.08) {
+    if (!isPlayer) {
+      if (isPowered) {
+        // Run away: Target opposite corner
+        e.dir = getBestDir(tx, ty, (pacman.x < 14 ? 27 : 0), (pacman.y < 7 ? 13 : 0), e.dir);
+      } else {
+        e.dir = getBestDir(tx, ty, targetX, targetY, e.dir);
+      }
+    } else if (e.nextDir != 0) {
+      bool canTurn = false;
+      if (e.nextDir == 1 && !isWall(tx, ty - 1)) canTurn = true;
+      else if (e.nextDir == 2 && !isWall(tx + 1, ty)) canTurn = true;
+      else if (e.nextDir == 3 && !isWall(tx, ty + 1)) canTurn = true;
+      else if (e.nextDir == 4 && !isWall(tx - 1, ty)) canTurn = true;
+      
+      if (canTurn) {
+        e.dir = e.nextDir;
+        e.x = tx + 0.5; e.y = ty + 0.5;
+      }
+    }
+
+    if (e.dir == 1 && isWall(tx, ty - 1)) e.dir = 0;
+    if (e.dir == 2 && isWall(tx + 1, ty)) e.dir = 0;
+    if (e.dir == 3 && isWall(tx, ty + 1)) e.dir = 0;
+    if (e.dir == 4 && isWall(tx - 1, ty)) e.dir = 0;
+
+    if (isPlayer) {
+      if (maze[ty][tx] == 0) {
+        maze[ty][tx] = 2; score += 10; pelletsLeft--; playSound(0);
+      } else if (maze[ty][tx] == 3) {
+        maze[ty][tx] = 2; score += 50; pelletsLeft--; isPowered = true; powerTimer = millis(); playSound(2);
+      }
+    }
+  }
+
+  if (e.dir == 1) { e.y -= e.speed; e.x = tx + 0.5; }
+  else if (e.dir == 2) { e.x += e.speed; e.y = ty + 0.5; }
+  else if (e.dir == 3) { e.y += e.speed; e.x = tx + 0.5; }
+  else if (e.dir == 4) { e.x -= e.speed; e.y = ty + 0.5; }
+}
+
+void update() {
+  if (gameState != PLAYING) return;
+
+  int jX = analogRead(STICK_X);
+  int jY = analogRead(STICK_Y);
+  if (jY < 300) pacman.nextDir = 1;
+  else if (jX > 700) pacman.nextDir = 2;
+  else if (jY > 700) pacman.nextDir = 3;
+  else if (jX < 300) pacman.nextDir = 4;
+
+  moveEntity(pacman, true);
+
+  if (isPowered && millis() - powerTimer > 7000) isPowered = false;
+
+  for (int i = 0; i < 3; i++) {
+    int targetX, targetY;
+    
+    // Ghost Logic Implementation
+    if (i == 0) { // Chaser: Directly follow Pacman
+      targetX = (int)pacman.x;
+      targetY = (int)pacman.y;
+    } 
+    else if (i == 1) { // Ambusher: Target 3 tiles ahead
+      targetX = (int)pacman.x;
+      targetY = (int)pacman.y;
+      if (pacman.dir == 1) targetY -= 3;
+      else if (pacman.dir == 2) targetX += 3;
+      else if (pacman.dir == 3) targetY += 3;
+      else if (pacman.dir == 4) targetX -= 3;
+    }
+    else { // Random/Patrol
+      if (random(0, 10) > 7) { targetX = (int)pacman.x; targetY = (int)pacman.y; }
+      else { targetX = (i == 2 ? 0 : 27); targetY = (i == 2 ? 0 : 13); }
+    }
+
+    float spdOrig = ghosts[i].speed;
+    if (isPowered) ghosts[i].speed = 0.05;
+    moveEntity(ghosts[i], false, targetX, targetY);
+    ghosts[i].speed = spdOrig;
+
+    if (abs(ghosts[i].x - pacman.x) < 0.6 && abs(ghosts[i].y - pacman.y) < 0.6) {
+      if (isPowered) {
+        ghosts[i].x = 13.5; ghosts[i].y = 4.5; score += 200; playSound(2);
+      } else {
+        lives--; playSound(1);
+        if (lives <= 0) gameState = GAMEOVER; else resetLevel();
+      }
+    }
+  }
+
+  if (pelletsLeft <= 0) initGame();
+}
+
+void render() {
+  u8g2.firstPage();
+  do {
+    if (gameState == TITLE) {
+      u8g2.setFont(u8g2_font_logisoso16_tr);
+      u8g2.drawStr(20, 35, "CYBER");
+      u8g2.drawStr(25, 55, "PACMAN");
+      u8g2.setFont(u8g2_font_4x6_tf);
+      if ((millis()/500)%2) u8g2.drawStr(35, 62, "PRESS START");
+    } else {
+      u8g2.setDrawColor(1);
+      for (int y = 0; y < MAZE_H; y++) {
+        for (int x = 0; x < MAZE_W; x++) {
+          int sx = OFFSET_X + x * TILE_SIZE;
+          int sy = OFFSET_Y + y * TILE_SIZE;
+          if (maze[y][x] == 1) u8g2.drawBox(sx, sy, TILE_SIZE, TILE_SIZE);
+          else if (maze[y][x] == 0) u8g2.drawPixel(sx + 2, sy + 2);
+          else if (maze[y][x] == 3) u8g2.drawCircle(sx + 2, sy + 2, 1);
+        }
+      }
+
+      int px = OFFSET_X + (int)(pacman.x * TILE_SIZE);
+      int py = OFFSET_Y + (int)(pacman.y * TILE_SIZE);
+      u8g2.drawDisc(px, py, 2);
+      
+      for (int i = 0; i < 3; i++) {
+        int gx = OFFSET_X + (int)(ghosts[i].x * TILE_SIZE);
+        int gy = OFFSET_Y + (int)(ghosts[i].y * TILE_SIZE);
+        if (isPowered) u8g2.drawFrame(gx-2, gy-2, 4, 4);
+        else u8g2.drawBox(gx-2, gy-2, 4, 4);
+      }
+
+      u8g2.setFont(u8g2_font_4x6_tf);
+      u8g2.setCursor(0, 6); u8g2.print("SCORE:"); u8g2.print(score);
+      u8g2.setCursor(100, 6); u8g2.print("UP:"); u8g2.print(lives);
+      
+      if (gameState == GAMEOVER) {
+        u8g2.setDrawColor(0); u8g2.drawBox(30, 25, 68, 15); u8g2.setDrawColor(1);
+        u8g2.drawFrame(30, 25, 68, 15); u8g2.drawStr(40, 35, "GAME OVER");
+      }
+    }
+  } while (u8g2.nextPage());
+}
+
+void setup() {
+  pinMode(BTN_START, INPUT_PULLUP);
+  u8g2.begin();
+  randomSeed(analogRead(A2));
+}
+
+void loop() {
+  if ((gameState == TITLE || gameState == GAMEOVER) && digitalRead(BTN_START) == LOW) initGame();
+  update();
+  render();
+}

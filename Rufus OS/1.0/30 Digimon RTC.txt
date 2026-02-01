@@ -1,0 +1,331 @@
+/*
+ * PROJECT: CORTEX-DIGI v7.6 (Movement Fix & Hard Reset)
+ * HARDWARE: Arduino Nano + SH1106 OLED + DS3231 RTC
+ * INPUT: 3-Button Classic Interface
+ * STATUS: Restored walking logic; Added A+C Reset on Title
+ */
+
+#include <Arduino.h>
+#include <U8g2lib.h>
+#include <Wire.h>
+#include <RTClib.h>
+#include <EEPROM.h>
+
+U8G2_SH1106_128X64_NONAME_1_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+RTC_DS3231 rtc;
+
+// --- PINOUT ---
+#define PIN_A       10  // Select / Cycle
+#define PIN_B       9   // Confirm / Action
+#define PIN_C       11  // Cancel / Status
+#define COMM_A      4   
+#define COMM_B      7   
+#define BZ_MEL      3   
+#define BZ_BASS     6   
+
+// --- SPRITES (16x15) ---
+static const unsigned char species_0_f0[] U8X8_PROGMEM = { 0xe0,0x01,0x30,0x02,0x38,0x07,0x1c,0x0f,0x04,0x0f,0x12,0x1e,0x32,0x1c,0x32,0x10,0x72,0x10,0x72,0x10,0x62,0x16,0x0c,0x0f,0x18,0x07,0xf0,0x03,0x00,0x00 };
+static const unsigned char species_0_f1[] U8X8_PROGMEM = { 0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0xe0,0x07,0x18,0x18,0x1c,0x38,0x0e,0x78,0x06,0x70,0x33,0x80,0xf1,0x80,0xe3,0xb0,0x06,0x78,0xfc,0x3f,0x00,0x00 };
+static const unsigned char species_1_f0[] U8X8_PROGMEM = { 0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x08,0x10,0x08,0x10,0xf4,0x1f,0xfc,0x37,0xfc,0x3f,0xfe,0x7f,0x00,0x00,0x00,0x00 };
+static const unsigned char species_1_f1[] U8X8_PROGMEM = { 0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x20,0x04,0x20,0x04,0xf0,0x0f,0xd0,0x0b,0xf0,0x0f,0x70,0x0e,0xfe,0x7f,0x00,0x00,0x00,0x00 };
+static const unsigned char species_2_f0[] U8X8_PROGMEM = { 0x1c,0x38,0xec,0x37,0x0c,0x30,0x02,0x40,0x11,0x88,0x11,0x88,0x11,0x88,0x81,0x81,0x81,0x81,0x01,0x80,0x01,0x80,0xfe,0x7f,0x00,0x00,0x00,0x00,0x00,0x00 };
+static const unsigned char species_2_f1[] U8X8_PROGMEM = { 0x60,0x06,0x50,0x0a,0x88,0x11,0x24,0x24,0x24,0x24,0x24,0x24,0x14,0x28,0xf4,0x2f,0xe4,0x27,0xe4,0x27,0xc4,0x23,0x08,0x10,0xf0,0x0f,0x00,0x00,0x00,0x00 };
+static const unsigned char species_3_f0[] U8X8_PROGMEM = { 0xe0,0x03,0x10,0x04,0xd8,0x08,0x86,0x09,0xc1,0x11,0x0f,0x10,0x02,0x10,0x7c,0x08,0x18,0x0a,0x14,0x11,0x1c,0x17,0x30,0x24,0xcc,0x23,0x4a,0x55,0x7e,0x7f }; // Agumon
+static const unsigned char species_3_f1[] U8X8_PROGMEM = { 0x00,0x00,0xe0,0x03,0x10,0x04,0xd8,0x08,0x86,0x09,0xc1,0x11,0x0f,0x10,0x02,0x10,0x7c,0x08,0x18,0x0a,0x14,0x11,0x14,0x15,0x2c,0x22,0xca,0x55,0x7e,0x7f };
+static const unsigned char species_4_f0[] U8X8_PROGMEM = { 0xe0,0x03,0x10,0x04,0xd8,0x08,0x86,0x09,0xc1,0x11,0x0f,0x10,0x02,0x10,0x7c,0x08,0x18,0x0a,0x14,0x11,0x1c,0x17,0x30,0x24,0xcc,0x23,0x4a,0x55,0x7e,0x7f };
+static const unsigned char species_4_f1[] U8X8_PROGMEM = { 0x00,0x00,0xe0,0x03,0x10,0x04,0xd8,0x08,0x86,0x09,0xc1,0x11,0x0f,0x10,0x02,0x10,0x7c,0x08,0x18,0x0a,0x14,0x11,0x14,0x15,0x2c,0x22,0xca,0x55,0x7e,0x7f };
+
+static const unsigned char poop_0[] U8X8_PROGMEM = { 0x00,0x00,0x00,0x00,0x00,0x00,0xc0,0x01,0xf0,0x07,0x38,0x0e,0x1c,0x1c,0xfe,0x3f,0xff,0x7f,0xff,0x7f,0xff,0x7f,0xff,0x7f,0xfe,0x3f,0x00,0x00,0x00,0x00 };
+static const unsigned char poop_1[] U8X8_PROGMEM = { 0x00,0x00,0x00,0x00,0x00,0x00,0xe0,0x03,0xf8,0x0f,0x3c,0x1e,0x1e,0x3c,0xfe,0x7f,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xfe,0x7f,0x00,0x00,0x00,0x00 };
+
+// --- MASTER LIBRARY CONFIG ---
+struct SpeciesDef {
+  const unsigned char* f0;
+  const unsigned char* f1;
+  const char* name;
+  unsigned long evoAge; 
+  bool isEgg;
+  int stage; // 0: Egg, 1: Baby I, 2: Baby II, 3: Child, 4: Adult, 5: Perfect, 6: Mega
+};
+
+const SpeciesDef DIGI_LIB[] PROGMEM = {
+  {species_0_f0, species_0_f1, "EGG", 60, true, 0},         
+  {species_1_f0, species_1_f1, "BOTAMON", 600, false, 1},   
+  {species_2_f0, species_2_f1, "KOROMON", 21600, false, 2}, 
+  {species_3_f0, species_3_f1, "AGUMON", 86400, false, 3},  
+  {species_4_f0, species_4_f1, "BETAMON", 86400, false, 3}  
+};
+
+// --- CORE SYSTEM STATE ---
+enum Screen { TITLE, IDLE, MENU, TRAINING, BATTLE, COMM, RESULT, STATUS };
+
+struct DigiCore {
+  int speciesIdx = 0;
+  Screen mode = TITLE;
+  int hunger = 4, strength = 0, poop = 0, careMistakes = 0, trainingCount = 0, wins = 0;
+  bool isZoomed = false, isLightMode = false, isCalling = false;
+  bool isSleeping = false, lightsOff = false;
+  unsigned long stageStartTS = 0, birthTS = 0, lastTickTS = 0;
+  unsigned long callStartTS = 0, actionTime = 0, sleepWarningTS = 0;
+  float posX = 56.0, posY_offset = 0, velY = 0;
+  int moveDir = 1, menuIdx = 0, mashCount = 0, opponentPower = 0;
+  String resultMsg = "";
+} vpet;
+
+// --- PERSISTENCE & SYSTEM ---
+
+void saveToEEPROM() {
+  EEPROM.put(0, vpet);
+}
+
+void loadFromEEPROM() {
+  DigiCore temp;
+  EEPROM.get(0, temp);
+  if (temp.speciesIdx >= 0 && temp.speciesIdx <= 16 && temp.birthTS > 0) {
+    vpet = temp;
+    vpet.mode = TITLE; 
+    // Boundary check for saved position
+    if (vpet.posX < 5 || vpet.posX > 105) vpet.posX = 56;
+  }
+}
+
+void hardReset() {
+  for (int i = 0 ; i < sizeof(vpet) ; i++) EEPROM.write(i, 0);
+  DigiCore fresh;
+  vpet = fresh;
+  DateTime now = rtc.now();
+  vpet.birthTS = now.unixtime(); 
+  vpet.stageStartTS = now.unixtime(); 
+  vpet.lastTickTS = now.unixtime();
+  saveToEEPROM();
+  tone(BZ_MEL, 440, 1000); // Sound feedback for reset
+}
+
+// --- CORE FUNCTIONS ---
+
+void playChirp(int freq, int dur) { 
+  tone(BZ_MEL, freq, dur); 
+  delay(dur/2); 
+}
+
+void performEvolution() {
+  int cur = vpet.speciesIdx;
+  int next = cur;
+  if (cur == 0) next = 1; 
+  else if (cur == 1) next = 2;
+  else if (cur == 2) next = (vpet.careMistakes <= 2) ? 3 : 4; 
+  if (next != cur) {
+    vpet.speciesIdx = next;
+    vpet.stageStartTS = rtc.now().unixtime();
+    vpet.careMistakes = 0; vpet.trainingCount = 0;
+    vpet.isSleeping = false; vpet.lightsOff = false;
+    saveToEEPROM();
+    tone(BZ_MEL, 1000, 500); delay(600); tone(BZ_MEL, 1500, 500);
+  }
+}
+
+void drawAdvancedSprite(int x, int y, int w, int h, const unsigned char* bitmap, bool mirror, int tilt, int scale) {
+  for (int i = 0; i < h; i++) {
+    for (int j = 0; j < w; j++) {
+      if (pgm_read_byte(bitmap + (i * ((w + 7) / 8)) + (j / 8)) & (1 << (j % 8))) {
+        int drawX = mirror ? (x + (w - 1 - j) * scale) : (x + j * scale);
+        int drawY = y + i * scale;
+        if (tilt != 0) drawX += (tilt * ((h - i) / (h / 3)));
+        if (scale > 1) u8g2.drawBox(drawX, drawY, scale, scale);
+        else u8g2.drawPixel(drawX, drawY);
+      }
+    }
+  }
+}
+
+void handleInput() {
+  unsigned long nowMs = millis();
+
+  // HARD RESET CHECK (Holding A+C on Title)
+  if (vpet.mode == TITLE) {
+    if (digitalRead(PIN_A) == LOW && digitalRead(PIN_C) == LOW) {
+      delay(2000);
+      if (digitalRead(PIN_A) == LOW && digitalRead(PIN_C) == LOW) {
+        hardReset();
+        return;
+      }
+    }
+  }
+
+  if (vpet.isSleeping && !vpet.lightsOff) {
+    if (digitalRead(PIN_A) == LOW || digitalRead(PIN_B) == LOW || digitalRead(PIN_C) == LOW) {
+      vpet.lightsOff = true; playChirp(600, 50); delay(200); saveToEEPROM(); return;
+    }
+  }
+
+  if (digitalRead(PIN_A) == LOW) { // SELECT
+    playChirp(800, 50);
+    if (vpet.mode == IDLE) { vpet.mode = MENU; vpet.menuIdx = 0; }
+    else if (vpet.mode == MENU) { vpet.menuIdx = (vpet.menuIdx + 1) % 7; } 
+    delay(200);
+  }
+  if (digitalRead(PIN_B) == LOW) { // CONFIRM
+    playChirp(1200, 100);
+    if (vpet.mode == TITLE) vpet.mode = IDLE;
+    else if (vpet.mode == IDLE) { vpet.isZoomed = !vpet.isZoomed; saveToEEPROM(); }
+    else if (vpet.mode == MENU) {
+      if (vpet.menuIdx == 0) { if(vpet.hunger<4)vpet.hunger++; vpet.mode = IDLE; }
+      else if (vpet.menuIdx == 1) { vpet.mode = TRAINING; vpet.mashCount = 0; vpet.actionTime = nowMs; }
+      else if (vpet.menuIdx == 2) { vpet.mode = BATTLE; vpet.mashCount = 0; vpet.actionTime = nowMs; vpet.opponentPower = random(20,50); }
+      else if (vpet.menuIdx == 3) { vpet.poop = 0; playChirp(2000, 100); playChirp(1500, 100); vpet.mode = IDLE; } // CLEAN
+      else if (vpet.menuIdx == 6) { vpet.lightsOff = !vpet.lightsOff; vpet.mode = IDLE; }
+      
+      if (vpet.menuIdx < 4 || vpet.menuIdx == 6) { saveToEEPROM(); if(vpet.mode == MENU) vpet.mode = IDLE; }
+    }
+    else if (vpet.mode == TRAINING || vpet.mode == BATTLE) { vpet.mashCount++; playChirp(1500, 30); }
+    delay(200);
+  }
+  if (digitalRead(PIN_C) == LOW) { // CANCEL
+    playChirp(400, 50);
+    if (vpet.mode == IDLE) vpet.mode = STATUS;
+    else vpet.mode = IDLE;
+    delay(200);
+  }
+}
+
+void setup() {
+  Wire.begin(); u8g2.begin(); rtc.begin();
+  pinMode(PIN_A, INPUT_PULLUP); pinMode(PIN_B, INPUT_PULLUP); pinMode(PIN_C, INPUT_PULLUP);
+  pinMode(BZ_MEL, OUTPUT); pinMode(BZ_BASS, OUTPUT);
+  if (rtc.lostPower()) rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+  
+  loadFromEEPROM();
+  
+  DateTime now = rtc.now();
+  if (vpet.birthTS == 0) {
+    vpet.birthTS = now.unixtime(); vpet.stageStartTS = now.unixtime(); vpet.lastTickTS = now.unixtime();
+    saveToEEPROM();
+  }
+}
+
+void loop() {
+  handleInput();
+  DateTime now = rtc.now();
+  unsigned long nowTS = now.unixtime();
+  unsigned long nowMs = millis();
+  
+  // --- SLEEP SCHEDULE LOGIC ---
+  int hr = now.hour();
+  int stage = pgm_read_byte(&(DIGI_LIB[vpet.speciesIdx].stage));
+  bool tired = false;
+  if (stage >= 3) { 
+    if (stage == 3 && hr >= 21) tired = true; 
+    else if (stage == 4 && hr >= 22) tired = true; 
+    else if (stage >= 5 && hr >= 23) tired = true; 
+    if (hr < 8) tired = true; 
+  }
+
+  if (tired) {
+    if (!vpet.isSleeping && vpet.lightsOff) { vpet.isSleeping = true; saveToEEPROM(); }
+    if (!vpet.lightsOff && (nowMs % 60000 < 500)) { 
+        if (vpet.sleepWarningTS == 0) vpet.sleepWarningTS = nowTS;
+        if (nowTS - vpet.sleepWarningTS > 1200) { vpet.careMistakes++; vpet.sleepWarningTS = nowTS; saveToEEPROM(); }
+    }
+  } else {
+    if (vpet.isSleeping) { vpet.isSleeping = false; vpet.lightsOff = false; vpet.sleepWarningTS = 0; saveToEEPROM(); }
+  }
+
+  // --- METABOLISM & WASTE ---
+  unsigned long tickRate = vpet.isSleeping ? 7200 : 3600;
+  if (nowTS - vpet.lastTickTS > tickRate) { 
+    if(vpet.hunger > 0) { vpet.hunger--; }
+    if (stage > 0 && random(100) < 40) {
+      if (vpet.poop < 4) vpet.poop++;
+      else vpet.careMistakes++;
+    }
+    vpet.lastTickTS = nowTS; 
+    saveToEEPROM(); 
+  }
+
+  // Evolution
+  unsigned long elapsed = nowTS - vpet.stageStartTS;
+  unsigned long req = pgm_read_dword(&(DIGI_LIB[vpet.speciesIdx].evoAge));
+  if (req > 0 && elapsed >= req) performEvolution();
+
+  // --- PHYSICS & WALKING LOGIC ---
+  if (!vpet.isSleeping && vpet.mode == IDLE) {
+    // Jump/Vertical Physics
+    if (vpet.posY_offset < 0) vpet.velY += 0.4; 
+    else { vpet.posY_offset = 0; vpet.velY = 0; if (random(800) == 0) vpet.velY = -3.5; }
+    vpet.posY_offset += vpet.velY;
+
+    // RESTORED: Horizontal Waddling logic
+    if (nowMs % 100 < 20) {
+      if (!pgm_read_byte(&(DIGI_LIB[vpet.speciesIdx].isEgg))) {
+        vpet.posX += (vpet.moveDir * 1.5);
+        // Safety Clamp boundaries
+        if (vpet.posX > 105) { vpet.posX = 105; vpet.moveDir = -1; }
+        if (vpet.posX < 5)   { vpet.posX = 5;   vpet.moveDir = 1; }
+      }
+    }
+  } else {
+    vpet.posY_offset = 0; vpet.velY = 0;
+  }
+
+  u8g2.firstPage();
+  do {
+    if (vpet.lightsOff) u8g2.setContrast(20); else u8g2.setContrast(255);
+    u8g2.setFont(u8g2_font_u8glib_4_tf);
+    
+    int h12 = now.hour() % 12; if (h12 == 0) h12 = 12;
+    char ampm = (now.hour() < 12) ? 'A' : 'P';
+    
+    u8g2.setCursor(0, 6);
+    u8g2.print(now.month()); u8g2.print("/"); u8g2.print(now.day()); u8g2.print("/"); u8g2.print(now.year());
+    u8g2.setCursor(85, 6);
+    u8g2.print(h12); u8g2.print(":"); if(now.minute()<10) u8g2.print("0"); u8g2.print(now.minute()); u8g2.print(ampm);
+    u8g2.drawHLine(0, 8, 128);
+
+    if (vpet.mode == TITLE) { 
+      u8g2.setFont(u8g2_font_6x10_tf); 
+      u8g2.drawStr(25, 35, "CORTEX-DIGI"); 
+      u8g2.drawStr(30, 55, "PRESS B"); 
+      u8g2.setFont(u8g2_font_u8glib_4_tf);
+      u8g2.drawStr(2, 62, "HOLD A+C TO RESET");
+    } 
+    else {
+      u8g2.drawStr(0, 15, "H:"); for(int i=0; i<vpet.hunger; i++) u8g2.drawDisc(12+(i*5), 12, 1);
+      u8g2.drawStr(50, 15, "S:"); for(int i=0; i<vpet.strength; i++) u8g2.drawDisc(62+(i*5), 12, 1);
+      
+      int scale = vpet.isZoomed ? 2 : 1, anim = (nowMs / 400) % 2;
+      int py = (vpet.isZoomed ? 22 : 34) + (int)vpet.posY_offset;
+      int px = vpet.isZoomed ? (int)vpet.posX - 8 : (int)vpet.posX;
+      const unsigned char* f0 = (const unsigned char*)pgm_read_ptr(&(DIGI_LIB[vpet.speciesIdx].f0));
+      const unsigned char* f1 = (const unsigned char*)pgm_read_ptr(&(DIGI_LIB[vpet.speciesIdx].f1));
+
+      if (vpet.isSleeping) {
+        drawAdvancedSprite(px, py, 16, 15, f0, (vpet.moveDir == 1), 0, scale);
+        u8g2.drawStr(px + 18, py, "Zzz");
+      } else {
+        drawAdvancedSprite(px, py, 16, 15, anim ? f1 : f0, (vpet.moveDir == 1), (anim ? 1 : -1), scale);
+      }
+
+      for(int i=0; i<vpet.poop; i++) {
+        u8g2.drawXBMP(100 - (i*12), 45, 16, 15, anim ? poop_1 : poop_0);
+      }
+      
+      if (vpet.mode == MENU) {
+        u8g2.drawRFrame(5, 20, 65, 42, 3);
+        const char* m[] = {"FEED", "TRAIN", "BATTLE", "CLEAN", "LINK-B", "LINK-J", "LIGHTS"};
+        for(int i=0; i<7; i++) { 
+          u8g2.setCursor(10, 26+(i*6)); 
+          u8g2.print(vpet.menuIdx==i?">":" "); 
+          u8g2.print(m[i]); 
+        }
+      }
+      if (vpet.mode == STATUS) {
+        u8g2.drawRBox(10, 15, 108, 46, 3); u8g2.setDrawColor(0);
+        u8g2.setCursor(15, 25); u8g2.print("NAME: "); u8g2.print((const char*)pgm_read_ptr(&(DIGI_LIB[vpet.speciesIdx].name)));
+        u8g2.setCursor(15, 33); u8g2.print("MISTAKES: "); u8g2.print(vpet.careMistakes);
+        u8g2.setCursor(15, 41); u8g2.print("WASTE: "); u8g2.print(vpet.poop);
+        u8g2.setCursor(15, 49); u8g2.print("TRAIN:"); u8g2.print(vpet.trainingCount);
+        u8g2.setDrawColor(1);
+      }
+    }
+  } while (u8g2.nextPage());
+}

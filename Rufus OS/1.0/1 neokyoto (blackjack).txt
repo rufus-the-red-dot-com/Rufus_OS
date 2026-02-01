@@ -1,0 +1,156 @@
+#include <Arduino.h>
+#include <U8g2lib.h>
+#include <Wire.h>
+#include <EEPROM.h>
+
+U8G2_SH1106_128X64_NONAME_1_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+
+#define BZ_MEL     3   
+#define BZ_BASS    6   
+#define PIN_HIT    10 
+#define PIN_STAND  9  
+#define PIN_MUTE   11 
+#define PIN_SAVE   5  
+#define STICK_SW   2  
+#define STICK_Y    A1
+
+int wallet, highScore, trackIdx = 0; 
+int bet = 50, inverted = 0, scanlineY = 0;
+int pCards[6], dCards[6], pCount = 0, dCount = 0;
+String rTitle = "";
+enum State { TITLE, LOBBY, PLAYING, REPORT, GAMEOVER };
+State mode = TITLE;
+
+// --- GENERATIVE MUSIC DNA ---
+// 12-step melody phrases (interlock with 16-step bass)
+const int melBank[6][12] = {
+  {440, 0, 493, 523, 0, 587, 440, 0, 392, 349, 0, 329}, // A-Minor Noir
+  {523, 0, 659, 783, 0, 880, 523, 0, 987, 783, 0, 659}, // C-Major Shimmer
+  {293, 349, 0, 440, 587, 0, 293, 349, 440, 523, 0, 0}, // D-Industrial
+  {329, 0, 0, 392, 493, 0, 329, 0, 587, 523, 0, 440}, // E-Phrygian
+  {392, 440, 493, 0, 523, 587, 0, 659, 783, 0, 880, 987}, // G-Rising Glitch
+  {440, 440, 0, 880, 880, 0, 440, 220, 0, 440, 880, 0}  // Minimalist Stomp
+};
+
+// 16-bit Bass Patterns
+const uint16_t bassPatterns[6] = {0x888B, 0xB8B8, 0xAAAA, 0xC0C0, 0x9091, 0xFFFF};
+const int bassFreqs[6] = {30, 25, 35, 28, 22, 40};
+
+unsigned long lastBeat = 0;
+int step16 = 0; // Bass counter
+int step12 = 0; // Melody counter
+
+void setup() {
+  pinMode(BZ_MEL, OUTPUT); pinMode(BZ_BASS, OUTPUT);
+  pinMode(PIN_HIT, INPUT_PULLUP); pinMode(PIN_STAND, INPUT_PULLUP);
+  pinMode(PIN_MUTE, INPUT_PULLUP); pinMode(PIN_SAVE, INPUT_PULLUP);
+  pinMode(STICK_SW, INPUT_PULLUP);
+  randomSeed(analogRead(A0) + micros());
+  EEPROM.get(0, wallet); if(wallet <= 0 || wallet > 30000) wallet = 1000;
+  EEPROM.get(4, highScore); if(highScore < 0) highScore = 1000;
+  u8g2.begin();
+}
+
+void playGenerativeAudio() {
+  if(mode == TITLE) return;
+  int tempo = 140; // Unified master tempo
+  
+  if(millis() - lastBeat > tempo) {
+    // 1. BASS LAYER (D6) - 16 Step Cycle
+    if ((bassPatterns[trackIdx % 6] >> (15 - step16)) & 1) {
+      for(int i=0; i<10; i++){ 
+        digitalWrite(BZ_BASS, HIGH); delayMicroseconds(10000/bassFreqs[trackIdx % 6]);
+        digitalWrite(BZ_BASS, LOW); delayMicroseconds(10000/bassFreqs[trackIdx % 6]);
+      }
+    }
+
+    // 2. MELODY LAYER (D3) - 12 Step Cycle
+    int note = melBank[trackIdx % 6][step12];
+    if (note > 0) {
+      tone(BZ_MEL, note, tempo / 2);
+    } else {
+      noTone(BZ_MEL);
+    }
+
+    // Increment with different modulos for interlocking
+    step16 = (step16 + 1) % 16;
+    step12 = (step12 + 1) % 12;
+    lastBeat = millis();
+  }
+}
+
+// UI and Logic functions remain the same to ensure stability
+void drawHUD() {
+  if (mode == TITLE) return;
+  int cx = 112, cy = 32;
+  u8g2.setFont(u8g2_font_u8glib_4_tf); 
+  u8g2.drawVLine(cx, cy-8, 16); u8g2.drawHLine(cx-8, cy, 16);
+  u8g2.drawStr(90, cy+2, "MOD"); 
+  if (mode == LOBBY) { u8g2.drawStr(cx-4, cy-10, "DEL"); u8g2.drawStr(cx+10, cy+2, "BT"); u8g2.drawStr(cx-4, cy+16, "SAV"); }
+  else if (mode == PLAYING) { u8g2.drawStr(cx-4, cy-10, "HIT"); u8g2.drawStr(cx+10, cy+2, "STD"); }
+  else { u8g2.drawStr(cx-4, cy+16, "NXT"); }
+}
+
+void drawCard(int x, int y, int val) {
+  u8g2.drawFrame(x, y, 14, 20);
+  u8g2.setFont(u8g2_font_6x10_tf);
+  if (val == 11) u8g2.drawStr(x+4, y+13, "A");
+  else if (val >= 10) u8g2.drawStr(x+1, y+13, "10");
+  else { char buf[3]; itoa(val, buf, 10); u8g2.drawStr(x+4, y+13, buf); }
+}
+
+void getScore(int hand[], int count, int &hard, int &soft) {
+  int t = 0, a = 0;
+  for(int i=0; i<count; i++) { t += hand[i]; if(hand[i] == 11) a++; }
+  soft = t; while(t > 21 && a > 0) { t -= 10; a--; } hard = t;
+}
+
+void deal(int hand[], int &count) { 
+  if(count < 6) { 
+    int v = random(2, 15); if(v == 14) hand[count++] = 11; 
+    else if(v >= 10) hand[count++] = 10; else hand[count++] = v;
+  } 
+}
+
+void loop() {
+  playGenerativeAudio();
+  if(digitalRead(PIN_MUTE) == LOW) { inverted = !inverted; delay(250); }
+  if(digitalRead(PIN_STAND) == LOW && mode == LOBBY) { trackIdx++; step16 = 0; step12 = 0; delay(250); }
+
+  u8g2.firstPage();
+  do {
+    if(inverted) { u8g2.setDrawColor(1); u8g2.drawBox(0,0,128,64); u8g2.setDrawColor(0); } else { u8g2.setDrawColor(1); }
+    u8g2.drawFrame(0, 0, 128, 64);
+    drawHUD();
+
+    if (mode == TITLE) {
+      scanlineY = (scanlineY + 2) % 64; u8g2.drawHLine(0, scanlineY, 128);
+      u8g2.setFont(u8g2_font_9x15_tf); u8g2.drawStr(22, 30, "NEO-KYOTO");
+      u8g2.setFont(u8g2_font_6x10_tf); u8g2.drawStr(25, 52, "SYSTEM READY");
+      if(digitalRead(STICK_SW) == LOW) { mode = LOBBY; delay(300); }
+    } 
+    else if (mode == LOBBY) {
+      int y = analogRead(STICK_Y); if(y < 300) bet += 10; if(y > 700) bet -= 10;
+      if(bet > wallet) bet = wallet; if(bet < 10) bet = 10;
+      if(digitalRead(PIN_HIT) == LOW && wallet >= bet) { pCount = 0; dCount = 0; deal(pCards, pCount); deal(pCards, pCount); deal(dCards, dCount); mode = PLAYING; delay(300); }
+      if(digitalRead(PIN_SAVE) == LOW) { if(wallet > highScore) { highScore = wallet; EEPROM.put(4, highScore); } EEPROM.put(0, wallet); delay(400); }
+      u8g2.setFont(u8g2_font_6x10_tf); u8g2.setCursor(5, 18); u8g2.print("$"); u8g2.print(wallet); u8g2.setCursor(5, 35); u8g2.print("HI:$"); u8g2.print(highScore); u8g2.setCursor(5, 52); u8g2.print("BT:$"); u8g2.print(bet);
+    } 
+    else if (mode == PLAYING) {
+      int ph, ps, dh, ds; getScore(pCards, pCount, ph, ps); getScore(dCards, dCount, dh, ds);
+      if(digitalRead(PIN_HIT) == LOW) { deal(pCards, pCount); int h,s; getScore(pCards, pCount, h, s); if(h > 21) { rTitle = "BUSTED"; wallet -= bet; mode = REPORT; } delay(250); }
+      if(digitalRead(PIN_STAND) == LOW) { int tH, tS; getScore(dCards, dCount, tH, tS); while(tH < 17) { deal(dCards, dCount); getScore(dCards, dCount, tH, tS); }
+        if(tH > 21 || ph > tH) { rTitle = "WINNER"; wallet += bet; } else if(ph == tH) { rTitle = "PUSH"; } else { rTitle = "LOSER"; wallet -= bet; }
+        mode = REPORT; delay(250); }
+      u8g2.setFont(u8g2_font_u8glib_4_tf); u8g2.setCursor(5, 8); u8g2.print("DLR: "); u8g2.print(dh); for(int i=0; i<dCount; i++) drawCard(5+(i*15), 10, dCards[i]);
+      u8g2.drawHLine(0, 32, 105); u8g2.setCursor(5, 40); u8g2.print("YOU: "); u8g2.print(ph); if(ps > ph && ps <= 21) { u8g2.print(" ("); u8g2.print(ps); u8g2.print(")"); }
+      for(int i=0; i<pCount; i++) drawCard(5+(i*15), 42, pCards[i]);
+    } 
+    else if (mode == REPORT || mode == GAMEOVER) {
+      int ph, ps, dh, ds; getScore(pCards, pCount, ph, ps); getScore(dCards, dCount, dh, ds);
+      u8g2.setFont(u8g2_font_9x15_tf); u8g2.drawStr(10, 25, rTitle.c_str());
+      u8g2.setFont(u8g2_font_6x10_tf); u8g2.setCursor(10, 45); u8g2.print("Y:"); u8g2.print(ph); u8g2.print(" D:"); u8g2.print(dh);
+      if(digitalRead(PIN_SAVE) == LOW) { if(wallet <= 0) wallet = 1000; mode = LOBBY; delay(300); }
+    }
+  } while ( u8g2.nextPage() );
+}

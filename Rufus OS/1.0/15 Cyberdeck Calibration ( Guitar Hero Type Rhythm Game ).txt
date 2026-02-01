@@ -1,0 +1,270 @@
+#include <Arduino.h>
+#include <U8g2lib.h>
+#include <Wire.h>
+
+// SH1106 128x64 I2C
+U8G2_SH1106_128X64_NONAME_1_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+
+// --- PIN DEFINITIONS ---
+#define STICK_X    A0
+#define STICK_Y    A1
+#define BTN_START  2  
+#define BTN_STRUM  9  // D9 strums
+#define BTN_PAUSE  10 // D10 pauses
+#define BTN_COLOR  11 // D11 light/dark mode
+#define BZ_SFX     3  
+
+// --- GAME CONSTANTS ---
+#define MAX_NOTES    8
+#define HIT_ZONE     22 // Expanded window for easier timing
+#define CENTER_X     64
+#define CENTER_Y     32
+#define HUB_SIZE     8
+
+// --- DATA STRUCTURES ---
+struct Note {
+  float x, y;
+  int lane; // 0:Up (N), 1:Right (E), 2:Down (S), 3:Left (W)
+  float speed;
+  bool active;
+};
+
+enum State { TITLE, PLAYING, PAUSED, GAMEOVER };
+State gameState = TITLE;
+
+Note notes[MAX_NOTES];
+int score = 0;
+int streak = 0;
+int maxStreak = 0;
+unsigned long lastSpawn = 0;
+unsigned long spawnInterval = 3000; 
+float currentSpeed = 0.5; // Dynamic speed variable
+int flashTimer = 0;
+bool isDarkRow = false;
+
+// --- AUDIO ---
+void playSound(bool hit) {
+  if (hit) tone(BZ_SFX, 1200, 40); // High beep for hit
+  else tone(BZ_SFX, 150, 100);    // Low buzz for miss
+}
+
+// --- LOGIC ---
+void spawnNote() {
+  for (int i = 0; i < MAX_NOTES; i++) {
+    if (!notes[i].active) {
+      notes[i].active = true;
+      notes[i].lane = random(0, 4);
+      // Use the dynamic currentSpeed for new notes
+      notes[i].speed = currentSpeed;
+      
+      if (notes[i].lane == 0) { notes[i].x = CENTER_X; notes[i].y = 0; }
+      else if (notes[i].lane == 1) { notes[i].x = 128; notes[i].y = CENTER_Y; }
+      else if (notes[i].lane == 2) { notes[i].x = CENTER_X; notes[i].y = 64; }
+      else if (notes[i].lane == 3) { notes[i].x = 0; notes[i].y = CENTER_Y; }
+      break;
+    }
+  }
+}
+
+int getStickLane() {
+  int x = analogRead(STICK_X) - 512;
+  int y = analogRead(STICK_Y) - 512;
+  if (abs(x) < 180 && abs(y) < 180) return -1;
+  
+  if (abs(y) > abs(x)) {
+    return (y < 0) ? 0 : 2; // North (Up) or South (Down)
+  } else {
+    return (x > 0) ? 1 : 3; // East (Right) or West (Left)
+  }
+}
+
+void initGame() {
+  score = 0;
+  streak = 0;
+  maxStreak = 0;
+  spawnInterval = 3000; 
+  currentSpeed = 0.5; // Reset speed
+  for (int i = 0; i < MAX_NOTES; i++) notes[i].active = false;
+  gameState = PLAYING;
+}
+
+void update() {
+  // 1. Color Mode Toggle (D11)
+  static bool colorPrev = false;
+  if (digitalRead(BTN_COLOR) == LOW) {
+    if (!colorPrev) {
+      isDarkRow = !isDarkRow;
+      u8g2.sendF("c", isDarkRow ? 0xA7 : 0xA6); 
+      colorPrev = true;
+    }
+  } else colorPrev = false;
+
+  // 2. Start Logic (D2)
+  if ((gameState == TITLE || gameState == GAMEOVER) && digitalRead(BTN_START) == LOW) {
+    initGame();
+    delay(200);
+  }
+
+  // 3. Pause Logic (D10)
+  static bool pausePrev = false;
+  if (digitalRead(BTN_PAUSE) == LOW) {
+    if (!pausePrev) {
+      if (gameState == PLAYING) gameState = PAUSED;
+      else if (gameState == PAUSED) gameState = PLAYING;
+      pausePrev = true;
+    }
+  } else pausePrev = false;
+
+  if (gameState != PLAYING) return;
+
+  // 4. Note Movement
+  for (int i = 0; i < MAX_NOTES; i++) {
+    if (!notes[i].active) continue;
+    float dx = CENTER_X - notes[i].x;
+    float dy = CENTER_Y - notes[i].y;
+    float dist = sqrt(dx*dx + dy*dy);
+
+    if (dist < 4) { // Missed - reached center
+      notes[i].active = false;
+      streak = 0;
+      // SLOWER as mistakes are made: Penalize speed on miss
+      currentSpeed = max(0.4f, currentSpeed - 0.15f);
+      playSound(false);
+    } else {
+      notes[i].x += (dx / dist) * notes[i].speed;
+      notes[i].y += (dy / dist) * notes[i].speed;
+    }
+  }
+
+  // 5. Spawning
+  if (millis() - lastSpawn > spawnInterval) {
+    spawnNote();
+    lastSpawn = millis();
+    // Frequency also scales slightly with performance
+    if (spawnInterval > 800) spawnInterval -= (5 + streak); 
+  }
+
+  // 6. Strum Logic (D9)
+  static bool strumPrev = false;
+  bool strumPressed = (digitalRead(BTN_STRUM) == LOW);
+  int curLane = getStickLane();
+
+  if (strumPressed && !strumPrev) {
+    flashTimer = 6;
+    bool hitFound = false;
+
+    if (curLane != -1) {
+      for (int i = 0; i < MAX_NOTES; i++) {
+        if (notes[i].active && notes[i].lane == curLane) {
+          float dx = CENTER_X - notes[i].x;
+          float dy = CENTER_Y - notes[i].y;
+          float dist = sqrt(dx*dx + dy*dy);
+          
+          if (dist < HIT_ZONE) {
+            notes[i].active = false;
+            hitFound = true;
+            streak++;
+            if (streak > maxStreak) maxStreak = streak;
+            score += 10 * (1 + (streak / 10));
+            
+            // FASTER as score increases: Reward accuracy with speed increase
+            currentSpeed = min(2.5f, currentSpeed + 0.05f);
+            
+            playSound(true);
+            break;
+          }
+        }
+      }
+    }
+
+    if (!hitFound) {
+      streak = 0;
+      // Penalize speed on empty strum mistakes
+      currentSpeed = max(0.4f, currentSpeed - 0.10f);
+      playSound(false);
+    }
+    strumPrev = true;
+  } else if (!strumPressed) strumPrev = false;
+
+  if (flashTimer > 0) flashTimer--;
+}
+
+void render() {
+  u8g2.firstPage();
+  do {
+    if (gameState == TITLE) {
+      u8g2.setFont(u8g2_font_helvB10_tr); 
+      u8g2.drawStr(25, 20, "CYBERDECK");
+      u8g2.drawStr(20, 35, "CALIBRATION");
+      u8g2.setFont(u8g2_font_5x7_tf); 
+      u8g2.drawStr(20, 50, "D9:STRUM D10:PAUSE");
+      if ((millis()/500)%2) u8g2.drawStr(38, 62, "JACK IN [D2]");
+    } 
+    else {
+      u8g2.setDrawColor(1);
+      // Lane Guide Lines (Dashed)
+      for(int i=0; i<64; i+=8) u8g2.drawPixel(CENTER_X, i);
+      for(int i=0; i<128; i+=8) u8g2.drawPixel(i, CENTER_Y);
+
+      int sLane = getStickLane();
+      
+      // --- Central Cube Processor ---
+      u8g2.drawFrame(CENTER_X - HUB_SIZE, CENTER_Y - HUB_SIZE, HUB_SIZE*2+1, HUB_SIZE*2+1);
+      if (flashTimer > 0) {
+        u8g2.drawFrame(CENTER_X - HUB_SIZE - 2, CENTER_Y - HUB_SIZE - 2, HUB_SIZE*2+5, HUB_SIZE*2+5);
+      }
+      
+      // Highlight Side Indicators
+      int barThick = (flashTimer > 0) ? 5 : 3;
+      int barOffset = (flashTimer > 0) ? 6 : 4;
+      int hubFullWidth = HUB_SIZE * 2 + 1;
+
+      if (sLane == 0) u8g2.drawBox(CENTER_X - HUB_SIZE, CENTER_Y - HUB_SIZE - barOffset, hubFullWidth, barThick); 
+      else if (sLane == 1) u8g2.drawBox(CENTER_X + HUB_SIZE + barOffset - barThick + 1, CENTER_Y - HUB_SIZE, barThick, hubFullWidth);
+      else if (sLane == 2) u8g2.drawBox(CENTER_X - HUB_SIZE, CENTER_Y + HUB_SIZE + barOffset - barThick + 1, hubFullWidth, barThick);
+      else if (sLane == 3) u8g2.drawBox(CENTER_X - HUB_SIZE - barOffset, CENTER_Y - HUB_SIZE, barThick, hubFullWidth);
+
+      // Draw Incoming Notes
+      for (int i = 0; i < MAX_NOTES; i++) {
+        if (!notes[i].active) continue;
+        int nx = (int)notes[i].x;
+        int ny = (int)notes[i].y;
+        
+        // Notes are now wide bars matching the HUB width
+        if (notes[i].lane == 0 || notes[i].lane == 2) {
+          // Vertical lane: Horizontal bar
+          u8g2.drawFrame(nx - HUB_SIZE, ny - 1, hubFullWidth, 3);
+        } else {
+          // Horizontal lane: Vertical bar
+          u8g2.drawFrame(nx - 1, ny - HUB_SIZE, 3, hubFullWidth);
+        }
+      }
+
+      // HUD
+      u8g2.setFont(u8g2_font_4x6_tf);
+      u8g2.setCursor(2, 8); u8g2.print("SCORE: "); u8g2.print(score);
+      u8g2.setCursor(2, 60); u8g2.print("STREAK: "); u8g2.print(streak);
+      u8g2.setCursor(90, 60); u8g2.print("MAX: "); u8g2.print(maxStreak);
+      
+      if (gameState == PAUSED) {
+        u8g2.setDrawColor(0); u8g2.drawBox(48, 25, 32, 14); u8g2.setDrawColor(1);
+        u8g2.drawFrame(48, 25, 32, 14);
+        u8g2.drawStr(53, 35, "PAUSED");
+      }
+    }
+  } while (u8g2.nextPage());
+}
+
+void setup() {
+  pinMode(BTN_START, INPUT_PULLUP);
+  pinMode(BTN_STRUM, INPUT_PULLUP);
+  pinMode(BTN_PAUSE, INPUT_PULLUP);
+  pinMode(BTN_COLOR, INPUT_PULLUP);
+  u8g2.begin();
+  randomSeed(analogRead(A2));
+}
+
+void loop() {
+  update();
+  render();
+}

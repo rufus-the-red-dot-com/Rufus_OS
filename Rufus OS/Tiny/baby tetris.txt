@@ -1,0 +1,151 @@
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+
+#define SCREEN_WIDTH 128 
+#define SCREEN_HEIGHT 32
+#define OLED_RESET    -1
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
+// PINS - Fixed for your reversed controls
+const int pinR = 2, pinL = 3, pinRot = 4, pinDrop = 5;
+const int canvasW = 10, canvasH = 29, bSize = 3; 
+
+// GAME STATE
+byte grid[10][29] = {0};
+int curX, curY, curType, curRot, nextType;
+int score = 0, lines = 0, level = 1;
+bool paused = false;
+unsigned long lastTick = 0;
+float vccVoltage = 4.0; // Battery tracker
+
+const uint16_t shapes[7][4] = {
+  {0x0F00, 0x4444, 0x0F00, 0x4444}, {0x4460, 0x0E80, 0xC440, 0x2E00},
+  {0x44C0, 0x8E00, 0x6440, 0x0E20}, {0x0660, 0x0660, 0x0660, 0x0660},
+  {0x06C0, 0x8C40, 0x06C0, 0x8C40}, {0x0E40, 0x4C40, 0x4E00, 0x4640},
+  {0x0C60, 0x4C80, 0x0C60, 0x4C80}
+};
+
+// --- BATTERY MEASUREMENT TRICK ---
+long readVcc() {
+  long result;
+  // Read 1.1V reference against AVcc
+  ADMUX = _BV(REFS0) | _BV(MUX3) | _BV(MUX2) | _BV(MUX1);
+  delay(2); // Wait for Vref to settle
+  ADCSRA |= _BV(ADSC); // Convert
+  while (bit_is_set(ADCSRA, ADSC));
+  result = ADCL;
+  result |= ADCH << 8;
+  result = 1125300L / result; // Calculate Vcc (in mV); 1125300 = 1.1*1023*1000
+  return result;
+}
+
+bool getBlock(int t, int r, int x, int y) { return (shapes[t][r] >> (15 - (y * 4 + x))) & 1; }
+
+bool canFit(int nx, int ny, int nr) {
+  for(int x=0; x<4; x++) for(int y=0; y<4; y++) {
+    if(getBlock(curType, nr, x, y)) {
+      int gx = nx + x, gy = ny + y;
+      if(gx < 0 || gx >= canvasW || gy >= canvasH || (gy >= 0 && grid[gx][gy])) return false;
+    }
+  }
+  return true;
+}
+
+void spawn() {
+  curX = 3; curY = 0; curType = nextType; nextType = random(7); curRot = 0;
+  if(!canFit(curX, curY, curRot)) { memset(grid, 0, sizeof(grid)); score = 0; level = 1; lines = 0; }
+}
+
+void setup() {
+  Wire.begin();
+  Wire.setClock(400000); // 18650 power is clean, we can go fast
+  if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) { for(;;); }
+
+  display.clearDisplay();
+  display.setRotation(1); 
+  
+  // Splash
+  display.setTextSize(1);
+  display.setTextColor(WHITE);
+  display.setCursor(2, 45); display.print("VAPE-TRIS");
+  display.setCursor(2, 55); display.print("BATTERY OK");
+  display.display();
+  delay(1500);
+  
+  pinMode(pinL, INPUT_PULLUP); pinMode(pinR, INPUT_PULLUP);
+  pinMode(pinRot, INPUT_PULLUP); pinMode(pinDrop, INPUT_PULLUP);
+  randomSeed(analogRead(0));
+  nextType = random(7); 
+  spawn();
+}
+
+void loop() {
+  // Check Battery every few seconds
+  if (millis() % 5000 < 50) { vccVoltage = readVcc() / 1000.0; }
+
+  // Pause Logic
+  if (digitalRead(pinL) == LOW && digitalRead(pinR) == LOW) { paused = !paused; delay(400); }
+
+  if (!paused) {
+    if(digitalRead(pinL) == LOW && canFit(curX-1, curY, curRot)) { curX--; delay(85); }
+    if(digitalRead(pinR) == LOW && canFit(curX+1, curY, curRot)) { curX++; delay(85); }
+    if(digitalRead(pinRot) == LOW) {
+      int nextR = (curRot + 1) % 4;
+      if(canFit(curX, curY, nextR)) curRot = nextR;
+      else if(canFit(curX-1, curY, nextR)) { curX--; curRot = nextR; } // Wall Kick
+      else if(canFit(curX+1, curY, nextR)) { curX++; curRot = nextR; }
+      delay(180);
+    }
+
+    int speed = (digitalRead(pinDrop) == LOW) ? 25 : max(40, 480 - (level * 45));
+    if(millis() - lastTick > speed) {
+      if(canFit(curX, curY+1, curRot)) curY++;
+      else {
+        for(int x=0; x<4; x++) for(int y=0; y<4; y++) if(getBlock(curType, curRot, x, y)) grid[curX+x][curY+y] = 1;
+        int rClear = 0;
+        for(int y=canvasH-1; y>=0; y--) {
+          bool full = true;
+          for(int x=0; x<10; x++) if(!grid[x][y]) full = false;
+          if(full) { rClear++; for(int ty=y; ty>0; ty--) for(int tx=0; tx<10; tx++) grid[tx][ty] = grid[tx][ty-1]; y++; }
+        }
+        if(rClear) { lines += rClear; score += rClear * 15 * level; level = (lines / 10) + 1; }
+        spawn();
+      }
+      lastTick = millis();
+    }
+  }
+  draw();
+}
+
+void draw() {
+  display.clearDisplay();
+  display.drawRect(0, 0, 32, 90, WHITE);
+
+  // HUD
+  display.setTextSize(1);
+  display.setCursor(0, 93);  display.print("S:"); display.print(score);
+  display.setCursor(0, 102); display.print("L:"); display.print(level);
+  
+  // Battery Warning
+  if (vccVoltage < 3.4) {
+    display.setCursor(0, 111); display.print("LOW!");
+  } else {
+    display.setCursor(0, 111); display.print("B:"); display.print(vccVoltage, 1);
+  }
+
+  // Next Preview
+  for(int x=0; x<4; x++) for(int y=0; y<4; y++)
+    if(getBlock(nextType, 0, x, y)) display.drawPixel(25+x, 122+y, WHITE);
+
+  if (paused) {
+    display.setCursor(2, 45); display.print("PAUSE");
+  } else {
+    for(int x=0; x<canvasW; x++) for(int y=0; y<canvasH; y++)
+      if(grid[x][y]) display.fillRect(x*bSize+1, y*bSize+1, bSize-1, bSize-1, WHITE);
+    for(int x=0; x<4; x++) for(int y=0; y<4; y++)
+      if(getBlock(curType, curRot, x, y)) 
+        display.fillRect((curX+x)*bSize+1, (curY+y)*bSize+1, bSize-1, bSize-1, WHITE);
+  }
+  display.display();
+}

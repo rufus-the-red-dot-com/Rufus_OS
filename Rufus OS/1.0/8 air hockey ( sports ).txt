@@ -1,0 +1,320 @@
+#include <Arduino.h>
+#include <U8g2lib.h>
+#include <Wire.h>
+
+// Using SH1106 128x64 I2C driver
+U8G2_SH1106_128X64_NONAME_1_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+
+// --- PIN DEFINITIONS ---
+#define STICK_X    A0
+#define STICK_Y    A1
+#define BTN_P2_UP  10 
+#define BTN_P2_DN  5  
+#define BTN_START  11 
+#define BTN_AI     9  
+#define BZ_SFX     3  
+#define BZ_SFX_2   6  
+#define BTN_INVERT 12 
+
+// --- GAME CONSTANTS ---
+#define PADDLE_RAD   6
+#define PUCK_RAD     3
+#define GOAL_SIZE    22
+#define MAX_SCORE    7
+#define MALLET_SPEED 2.5     
+#define SWING_SENSITIVITY 3.5 
+#define RINK_CURVE   14      
+#define GOAL_X_OFFSET 18     
+#define NET_DEPTH    6       
+
+// --- GAME STATE ---
+enum GameState { TITLE, PLAYING, GOAL, GAMEOVER };
+GameState currentState = TITLE;
+
+struct Entity {
+  float x, y;
+  float dx, dy;
+  float oldX, oldY; 
+};
+
+Entity p1, p2, puck;
+int score1 = 0;
+int score2 = 0;
+bool displayInverted = false;
+bool aiMode = false;
+unsigned long stateTimer = 0;
+
+// --- MELODY DATA ---
+// Frequencies
+#define NOTE_G4  392
+#define NOTE_C5  523
+#define NOTE_E5  659
+#define NOTE_G5  784
+
+void playOrganCharge() {
+  int melody[] = {NOTE_G4, NOTE_C5, NOTE_E5, NOTE_G5};
+  int durations[] = {150, 150, 150, 300};
+  for (int i = 0; i < 4; i++) {
+    tone(BZ_SFX, melody[i], durations[i]);
+    tone(BZ_SFX_2, melody[i] * 0.5, durations[i]); // Add bass layer
+    delay(durations[i] + 20);
+  }
+}
+
+void playOrganRiff() {
+  int melody[] = {NOTE_G5, NOTE_E5, NOTE_C5, NOTE_G4, NOTE_C5, NOTE_G5};
+  int durations[] = {100, 100, 100, 100, 100, 400};
+  for (int i = 0; i < 6; i++) {
+    tone(BZ_SFX, melody[i], durations[i]);
+    delay(durations[i] + 10);
+  }
+}
+
+void resetPuck(bool p1Scored) {
+  puck.x = 64;
+  puck.y = 32;
+  puck.dx = p1Scored ? -1.2 : 1.2;
+  puck.dy = random(-6, 7) / 10.0;
+  
+  p1.x = 35; p1.y = 32;
+  p2.x = 92; p2.y = 32;
+  p1.oldX = p1.x; p1.oldY = p1.y;
+  p2.oldX = p2.x; p2.oldY = p2.y;
+}
+
+void initGame() {
+  score1 = 0;
+  score2 = 0;
+  resetPuck(true);
+  currentState = PLAYING;
+  playOrganCharge();
+}
+
+void playSFX(int type) {
+  if (type == 0) { tone(BZ_SFX, 440, 20); }
+  else if (type == 1) { tone(BZ_SFX, 880, 30); tone(BZ_SFX_2, 660, 30); }
+}
+
+void updateSiren() {
+  if (currentState == GOAL) {
+    long elapsed = millis() - stateTimer;
+    if (elapsed < 1200) {
+      int freq = 500 + sin(elapsed * 0.03) * 200;
+      tone(BZ_SFX, freq);
+      tone(BZ_SFX_2, freq - 10);
+    } else if (elapsed >= 1200 && elapsed < 2000) {
+      noTone(BZ_SFX);
+      noTone(BZ_SFX_2);
+      // Play riff once after siren stops
+      static long lastRiff = 0;
+      if (millis() - lastRiff > 2000) {
+        playOrganRiff();
+        lastRiff = millis();
+      }
+    } else {
+      noTone(BZ_SFX);
+      noTone(BZ_SFX_2);
+    }
+  }
+}
+
+void drawPaddle(int x, int y) {
+  u8g2.drawCircle(x, y, PADDLE_RAD);      
+  u8g2.drawCircle(x, y, 2);               
+  u8g2.drawFrame(x-1, y-1, 3, 3);         
+}
+
+void drawGame() {
+  u8g2.firstPage();
+  do {
+    if (currentState == TITLE) {
+      u8g2.setFont(u8g2_font_logisoso16_tr);
+      u8g2.drawStr(5, 30, "AIR HOCKEY");
+      u8g2.setFont(u8g2_font_6x10_tf);
+      u8g2.drawStr(30, 50, "PRO EDITION");
+      if ((millis() / 500) % 2 == 0) u8g2.drawStr(20, 62, "PRESS START (11)");
+    } 
+    else {
+      // Draw Full Rink Frame (128x64)
+      u8g2.drawFrame(0, 0, 128, 64);
+      
+      // Visual Stadium Curves
+      u8g2.drawCircle(RINK_CURVE, RINK_CURVE, RINK_CURVE, U8G2_DRAW_UPPER_LEFT);
+      u8g2.drawCircle(127 - RINK_CURVE, RINK_CURVE, RINK_CURVE, U8G2_DRAW_UPPER_RIGHT);
+      u8g2.drawCircle(RINK_CURVE, 63 - RINK_CURVE, RINK_CURVE, U8G2_DRAW_LOWER_LEFT);
+      u8g2.drawCircle(127 - RINK_CURVE, 63 - RINK_CURVE, RINK_CURVE, U8G2_DRAW_LOWER_RIGHT);
+
+      u8g2.drawVLine(64, 0, 64); u8g2.drawCircle(64, 32, 12); 
+      
+      int gTop = 32 - GOAL_SIZE/2, gBot = 32 + GOAL_SIZE/2;
+      
+      // Goal 1 (P1 Side)
+      u8g2.drawVLine(GOAL_X_OFFSET, gTop, GOAL_SIZE); 
+      u8g2.drawHLine(GOAL_X_OFFSET - NET_DEPTH, gTop, NET_DEPTH); 
+      u8g2.drawHLine(GOAL_X_OFFSET - NET_DEPTH, gBot, NET_DEPTH); 
+      u8g2.drawVLine(GOAL_X_OFFSET - NET_DEPTH, gTop, GOAL_SIZE);
+      
+      // Goal 2 (P2 Side)
+      u8g2.drawVLine(127 - GOAL_X_OFFSET, gTop, GOAL_SIZE); 
+      u8g2.drawHLine(127 - GOAL_X_OFFSET, gTop, NET_DEPTH); 
+      u8g2.drawHLine(127 - GOAL_X_OFFSET, gBot, NET_DEPTH); 
+      u8g2.drawVLine(127 - GOAL_X_OFFSET + NET_DEPTH, gTop, GOAL_SIZE);
+
+      drawPaddle(p1.x, p1.y); drawPaddle(p2.x, p2.y);
+      u8g2.drawDisc(puck.x, puck.y, PUCK_RAD);
+      
+      u8g2.setFont(u8g2_font_5x7_tf);
+      u8g2.setCursor(55, 10); u8g2.print(score1);
+      u8g2.setCursor(68, 10); u8g2.print(score2);
+      
+      if (aiMode) u8g2.drawStr(95, 10, "[AI]");
+      
+      if (currentState == GOAL) {
+        u8g2.setFont(u8g2_font_6x12_tf); u8g2.drawStr(50, 35, "GOAL!");
+      } else if (currentState == GAMEOVER) {
+        u8g2.setFont(u8g2_font_6x12_tf);
+        u8g2.drawStr(40, 35, score1 >= MAX_SCORE ? "P1 WINS!" : "P2 WINS!");
+      }
+    }
+  } while (u8g2.nextPage());
+}
+
+void checkMalletCollision(Entity &m) {
+  float dx = puck.x - m.x, dy = puck.y - m.y;
+  float distance = sqrt(dx * dx + dy * dy);
+  float minDist = PADDLE_RAD + PUCK_RAD;
+  if (distance < minDist) {
+    float angle = atan2(dy, dx);
+    puck.x = m.x + cos(angle) * (minDist + 0.5);
+    puck.y = m.y + sin(angle) * (minDist + 0.5);
+    if (aiMode) {
+      float mvx = m.x - m.oldX, mvy = m.y - m.oldY;
+      float ms = sqrt(mvx * mvx + mvy * mvy);
+      float dmp = (ms < 0.5) ? 0.1 : 0.4;
+      puck.dx = (puck.dx * -dmp) + (mvx * 2.0);
+      puck.dy = (puck.dy * -dmp) + (mvy * 2.0);
+    } else {
+      float spd = sqrt(puck.dx * puck.dx + puck.dy * puck.dy);
+      if (spd < 2.5) spd = 2.5; spd *= 1.15;
+      puck.dx = cos(angle) * spd; puck.dy = sin(angle) * spd;
+    }
+    playSFX(1);
+  }
+}
+
+void updatePhysics() {
+  if (currentState != PLAYING) return;
+  float px = puck.x; puck.x += puck.dx; puck.y += puck.dy;
+  
+  // Stadium Corner Logic
+  float cx, cy; bool isC = false;
+  if (puck.x < RINK_CURVE && puck.y < RINK_CURVE) { cx = RINK_CURVE; cy = RINK_CURVE; isC = true; }
+  else if (puck.x > 127 - RINK_CURVE && puck.y < RINK_CURVE) { cx = 127 - RINK_CURVE; cy = RINK_CURVE; isC = true; }
+  else if (puck.x < RINK_CURVE && puck.y > 63 - RINK_CURVE) { cx = RINK_CURVE; cy = 63 - RINK_CURVE; isC = true; }
+  else if (puck.x > 127 - RINK_CURVE && puck.y > 63 - RINK_CURVE) { cx = 127 - RINK_CURVE; cy = 63 - RINK_CURVE; isC = true; }
+  
+  if (isC) {
+    float dx = puck.x - cx, dy = puck.y - cy, dist = sqrt(dx * dx + dy * dy), lim = RINK_CURVE - PUCK_RAD;
+    if (dist > lim) {
+      float a = atan2(dy, dx); puck.x = cx + cos(a) * lim; puck.y = cy + sin(a) * lim;
+      float nx = cos(a), ny = sin(a), tx = -ny, ty = nx;
+      float dn = puck.dx * nx + puck.dy * ny, dt = puck.dx * tx + puck.dy * ty;
+      if (dn > 0) { 
+        puck.dx = (tx * dt) + (nx * -dn * 0.1); 
+        puck.dy = (ty * dt) + (ny * -dn * 0.1); 
+        puck.dx *= 0.99; puck.dy *= 0.99; 
+        if (abs(dn) > 0.5) playSFX(0); 
+      }
+    }
+  }
+  
+  int gT = 32 - GOAL_SIZE/2, gB = 32 + GOAL_SIZE/2, g1 = GOAL_X_OFFSET, g2 = 127 - g1;
+  
+  // Goal Area Physics (P1)
+  if (puck.y > gT - PUCK_RAD && puck.y < gB + PUCK_RAD) {
+    if (px >= g1 && puck.x < g1 && puck.y > gT && puck.y < gB) { 
+      score2++; playSFX(2); currentState = (score2 >= MAX_SCORE) ? GAMEOVER : GOAL; stateTimer = millis(); 
+    } 
+    else if (puck.x < g1 && puck.x > g1 - NET_DEPTH) {
+      if (abs(puck.y - gT) < PUCK_RAD) { puck.dy = -abs(puck.dy) * 0.7; puck.y = gT - PUCK_RAD - 0.1; playSFX(0); }
+      if (abs(puck.y - gB) < PUCK_RAD) { puck.dy = abs(puck.dy) * 0.7; puck.y = gB + PUCK_RAD + 0.1; playSFX(0); }
+      if (puck.x < g1 - NET_DEPTH + PUCK_RAD) { puck.dx = abs(puck.dx) * 0.7; puck.x = g1 - NET_DEPTH + PUCK_RAD + 0.1; playSFX(0); }
+    }
+  }
+  
+  // Goal Area Physics (P2)
+  if (puck.y > gT - PUCK_RAD && puck.y < gB + PUCK_RAD) {
+    if (px <= g2 && puck.x > g2 && puck.y > gT && puck.y < gB) { 
+      score1++; playSFX(2); currentState = (score1 >= MAX_SCORE) ? GAMEOVER : GOAL; stateTimer = millis(); 
+    }
+    else if (puck.x > g2 && puck.x < g2 + NET_DEPTH) {
+      if (abs(puck.y - gT) < PUCK_RAD) { puck.dy = -abs(puck.dy) * 0.7; puck.y = gT - PUCK_RAD - 0.1; playSFX(0); }
+      if (abs(puck.y - gB) < PUCK_RAD) { puck.dy = abs(puck.dy) * 0.7; puck.y = gB + PUCK_RAD + 0.1; playSFX(0); }
+      if (puck.x > g2 + NET_DEPTH - PUCK_RAD) { puck.dx = -abs(puck.dx) * 0.7; puck.x = g2 + NET_DEPTH - PUCK_RAD - 0.1; playSFX(0); }
+    }
+  }
+  
+  if (!isC) {
+    if (puck.y <= PUCK_RAD) { puck.y = PUCK_RAD + 0.5; puck.dy *= -0.6; playSFX(0); }
+    else if (puck.y >= 63 - PUCK_RAD) { puck.y = 62.5 - PUCK_RAD; puck.dy *= -0.6; playSFX(0); }
+    if (puck.x <= PUCK_RAD) { puck.x = PUCK_RAD + 0.5; puck.dx = abs(puck.dx) * 0.6; playSFX(0); }
+    else if (puck.x >= 127 - PUCK_RAD) { puck.x = 126.5 - PUCK_RAD; puck.dx = -abs(puck.dx) * 0.6; playSFX(0); }
+  }
+  
+  checkMalletCollision(p1); checkMalletCollision(p2);
+  float f = aiMode ? 0.985 : 0.996; puck.dx *= f; puck.dy *= f;
+  float s = sqrt(puck.dx * puck.dx + puck.dy * puck.dy);
+  if (s > 6.5) { puck.dx *= 0.8; puck.dy *= 0.8; } if (s < 0.1) { puck.dx = 0; puck.dy = 0; }
+}
+
+void handleInput() {
+  static unsigned long lastInput = 0;
+  if (digitalRead(BTN_AI) == LOW && millis() - lastInput > 300) {
+    aiMode = !aiMode; lastInput = millis(); tone(BZ_SFX, aiMode ? 1000 : 500, 100); p1.x = 35; p2.x = 92;
+  }
+  p1.oldX = p1.x; p1.oldY = p1.y; p2.oldX = p2.x; p2.oldY = p2.y;
+  int stickX = analogRead(STICK_X), stickY = analogRead(STICK_Y);
+  if (aiMode) {
+    float jx = (stickX - 512) / 512.0, jy = (stickY - 512) / 512.0;
+    if (abs(jx) < 0.15) jx = 0; if (abs(jy) < 0.15) jy = 0;
+    p1.x += jx * SWING_SENSITIVITY; p1.y += jy * SWING_SENSITIVITY;
+    p1.x = constrain(p1.x, PADDLE_RAD + 1, 62); p1.y = constrain(p1.y, PADDLE_RAD + 1, 63 - PADDLE_RAD);
+    
+    // Physical Net Collision for Player 1
+    int gT = 32 - GOAL_SIZE/2, gB = 32 + GOAL_SIZE/2;
+    if (p1.y > gT - PADDLE_RAD && p1.y < gB + PADDLE_RAD) {
+      if (p1.x > GOAL_X_OFFSET - NET_DEPTH - PADDLE_RAD && p1.x < GOAL_X_OFFSET + PADDLE_RAD) {
+        if (p1.x > GOAL_X_OFFSET) p1.x = GOAL_X_OFFSET + PADDLE_RAD;
+        else if (p1.x < GOAL_X_OFFSET - NET_DEPTH) p1.x = GOAL_X_OFFSET - NET_DEPTH - PADDLE_RAD;
+        else { if (p1.y < 32) p1.y = gT - PADDLE_RAD; else p1.y = gB + PADDLE_RAD; }
+      }
+    }
+    
+    if (puck.dx > -0.1 || (abs(puck.dx) < 0.2 && abs(puck.dy) < 0.2)) {
+      if (p2.y < puck.y - 1) p2.y += MALLET_SPEED * 1.3; else if (p2.y > puck.y + 1) p2.y -= MALLET_SPEED * 1.3;
+      if (puck.x > 64) { float tx = constrain(puck.x + PADDLE_RAD, 66, 127 - PADDLE_RAD);
+      if (p2.x < tx) p2.x += MALLET_SPEED * 0.9; else if (p2.x > tx) p2.x -= MALLET_SPEED * 0.9; }
+    }
+  } else {
+    if (stickY < 400 && p1.y > PADDLE_RAD + 2) p1.y -= MALLET_SPEED;
+    if (stickY > 600 && p1.y < 62 - PADDLE_RAD) p1.y += MALLET_SPEED;
+    p1.x = 35; 
+    if (digitalRead(BTN_P2_UP) == LOW && p2.y > PADDLE_RAD + 2) p2.y -= MALLET_SPEED;
+    if (digitalRead(BTN_P2_DN) == LOW && p2.y < 62 - PADDLE_RAD) p2.y += MALLET_SPEED;
+    p2.x = 92;
+  }
+  if (digitalRead(BTN_START) == LOW) { if (currentState == TITLE || currentState == GAMEOVER) initGame(); else if (currentState == GOAL) { resetPuck(true); currentState = PLAYING; } }
+  if (digitalRead(BTN_INVERT) == LOW && millis() - lastInput > 300) { displayInverted = !displayInverted; u8g2.sendF("c", displayInverted ? 0xA7 : 0xA6); lastInput = millis(); }
+}
+
+void setup() { pinMode(BTN_P2_UP, INPUT_PULLUP); pinMode(BTN_P2_DN, INPUT_PULLUP); pinMode(BTN_START, INPUT_PULLUP); pinMode(BTN_AI, INPUT_PULLUP); pinMode(BTN_INVERT, INPUT_PULLUP); u8g2.begin(); randomSeed(analogRead(A2)); }
+
+void loop() {
+  handleInput();
+  if (currentState == PLAYING) updatePhysics();
+  else if (currentState == GOAL) {
+    updateSiren();
+    if (millis() - stateTimer > 3500) { resetPuck(true); currentState = PLAYING; }
+  }
+  drawGame();
+}

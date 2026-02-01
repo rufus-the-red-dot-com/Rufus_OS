@@ -1,0 +1,111 @@
+#include <Arduino.h>
+#include <U8g2lib.h>
+
+// Matches your confirmed working MP3 driver [cite: 1]
+U8G2_SSD1306_128X32_UNIVISION_1_HW_I2C u8g2(U8G2_R3); 
+
+// Pins based on your wiring setup 
+const int btnL = 2; const int btnR = 3; const int btnRot = 4; const int btnDrop = 5; 
+const int buzzer = 11; 
+
+// Game Config
+const int COLUMNS = 10; const int ROWS = 42;    
+byte board[10][42];     
+const uint16_t shapes[7] = {0x0F00, 0x6600, 0x4E00, 0x6C00, 0xC600, 0x8E00, 0x2E00};
+
+// Game State
+int currentX, currentY, currentType;
+uint16_t currentShape;
+unsigned long score = 0;
+int level = 1;
+bool gameOver = false;
+
+uint16_t rotateShape(uint16_t s) {
+  uint16_t r = 0;
+  for (int i = 0; i < 4; i++) {
+    for (int j = 0; j < 4; j++) {
+      if (bitRead(s, i + j * 4)) bitWrite(r, (3 - j) + i * 4, 1);
+    }
+  }
+  return r;
+}
+
+void spawn() {
+  currentX = 3; currentY = 0;
+  currentType = random(7);
+  currentShape = shapes[currentType];
+}
+
+void drawBlock(int x, int y) {
+  u8g2.drawBox(1 + (x * 3), y * 3, 2, 2); 
+}
+
+bool checkCollision(int nx, int ny, uint16_t ns) {
+  for (int i = 0; i < 4; i++) {
+    for (int j = 0; j < 4; j++) {
+      if (bitRead(ns, i + j * 4)) {
+        int tx = nx + i; int ty = ny + j;
+        if (tx < 0 || tx >= COLUMNS || ty >= ROWS || (ty >= 0 && board[tx][ty])) return true;
+      }
+    }
+  }
+  return false;
+}
+
+void setup() {
+  u8g2.begin();
+  pinMode(btnL, INPUT_PULLUP); pinMode(btnR, INPUT_PULLUP);
+  pinMode(btnRot, INPUT_PULLUP); pinMode(btnDrop, INPUT_PULLUP);
+  randomSeed(analogRead(0));
+  spawn();
+}
+
+void loop() {
+  if (gameOver) return;
+
+  // --- INPUTS ---
+  if (digitalRead(btnL) == LOW && !checkCollision(currentX - 1, currentY, currentShape)) { currentX--; delay(100); }
+  if (digitalRead(btnR) == LOW && !checkCollision(currentX + 1, currentY, currentShape)) { currentX++; delay(100); }
+  
+  // FIX: Rotate logic was missing a clear trigger
+  if (digitalRead(btnRot) == LOW) { 
+    uint16_t rs = rotateShape(currentShape);
+    if (!checkCollision(currentX, currentY, rs)) currentShape = rs;
+    tone(buzzer, 1000, 20);
+    delay(200); 
+  }
+
+  // --- GRAVITY & FAST DROP ---
+  static unsigned long lastFall = 0;
+  int currentSpeed = max(50, 500 - (level * 50)); 
+  
+  // FIX: Fast drop now triggers correctly on Pin 5
+  int fallDelay = (digitalRead(btnDrop) == LOW) ? 30 : currentSpeed;
+
+  if (millis() - lastFall > fallDelay) {
+    if (!checkCollision(currentX, currentY + 1, currentShape)) {
+      currentY++;
+    } else {
+      for (int i = 0; i < 4; i++) {
+        for (int j = 0; j < 4; j++) {
+          if (bitRead(currentShape, i + j * 4)) board[currentX + i][currentY + j] = 1;
+        }
+      }
+      spawn();
+    }
+    lastFall = millis();
+  }
+
+  u8g2.firstPage();
+  do {
+    u8g2.drawFrame(0, 0, 32, 128);
+    for (int x = 0; x < COLUMNS; x++) {
+      for (int y = 0; y < ROWS; y++) if (board[x][y]) drawBlock(x, y);
+    }
+    for (int i = 0; i < 4; i++) {
+      for (int j = 0; j < 4; j++) {
+        if (bitRead(currentShape, i + j * 4)) drawBlock(currentX + i, currentY + j);
+      }
+    }
+  } while (u8g2.nextPage());
+}

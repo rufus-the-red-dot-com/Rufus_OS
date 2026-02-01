@@ -1,0 +1,336 @@
+#include <Arduino.h>
+#include <U8g2lib.h>
+#include <Wire.h>
+
+// SH1106 128x64 I2C - Page Buffer mode for Arduino Nano (2KB RAM)
+U8G2_SH1106_128X64_NONAME_1_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+
+// --- PIN DEFINITIONS ---
+#define STICK_X    A0
+#define STICK_Y    A1
+#define BTN_SELECT 11 
+#define BTN_BACK   10 
+#define BTN_MODE   9  
+#define BTN_AUX    5  
+#define BZ_OUT     3  
+#define BZ_OUT2    6  
+
+// --- APP STATES ---
+enum AppState { HOME, CALCULATOR, CALENDAR, TIMER, SYNTH, STOPWATCH, METRONOME, DICE };
+AppState currentState = HOME;
+
+// --- GLOBAL NAVIGATION ---
+int menuIdx = 0;
+unsigned long lastInput = 0;
+
+// --- CALCULATOR VARS ---
+float calc_val1 = 0, calc_val2 = 0;
+char calc_op = ' ';
+int calc_cursor = 0;
+String calc_input = "";
+const char calc_keys[16] = {'7','8','9','/','4','5','6','*','1','2','3','-','C','0','=','+'};
+
+// --- CALENDAR VARS ---
+int cal_year = 2025;
+int cal_month = 1;
+const char* monthNames[] = {"JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"};
+
+// --- TIMER VARS ---
+unsigned long timer_start = 0;
+unsigned long timer_duration = 25 * 60; 
+bool timer_running = false;
+
+// --- STOPWATCH VARS ---
+unsigned long sw_start = 0;
+unsigned long sw_elapsed = 0;
+bool sw_running = false;
+
+// --- METRONOME VARS ---
+int metro_bpm = 120;
+unsigned long metro_last_tick = 0;
+
+// --- DICE VARS ---
+int dice_sides = 20;
+int dice_result = 0;
+
+// --- AUDIO UTILS (BIT-BANGING FOR DUAL SPEAKER) ---
+void playSfx(int f, int d) { 
+  if (f <= 0) return;
+  long delayTime = 1000000L / f / 2;
+  long numCycles = (long)f * d / 1000L;
+  for (long i = 0; i < numCycles; i++) {
+    digitalWrite(BZ_OUT, HIGH);
+    digitalWrite(BZ_OUT2, HIGH);
+    delayMicroseconds(delayTime);
+    digitalWrite(BZ_OUT, LOW);
+    digitalWrite(BZ_OUT2, LOW);
+    delayMicroseconds(delayTime);
+  }
+}
+
+int getStartDay(int y, int m) {
+  if (m < 3) { m += 12; y--; }
+  int k = y % 100;
+  int j = y / 100;
+  int h = (1 + (13 * (m + 1)) / 5 + k + k / 4 + j / 4 + 5 * j) % 7;
+  return (h + 5) % 7; 
+}
+
+int daysInMonth(int y, int m) {
+  if (m == 2) return ((y % 4 == 0 && y % 100 != 0) || (y % 400 == 0)) ? 29 : 28;
+  if (m == 4 || m == 6 || m == 9 || m == 11) return 30;
+  return 31;
+}
+
+// --- DRAWING FUNCTIONS ---
+
+void drawHome() {
+  u8g2.setFont(u8g2_font_7x14_tf);
+  u8g2.drawStr(25, 12, "CYBER-DECK OS");
+  u8g2.setFont(u8g2_font_5x7_tf);
+  
+  const char* apps[] = {
+    "1. CALCULATOR", "2. CALENDAR", "3. FOCUS TIMER", 
+    "4. SIGNAL GEN", "5. STOPWATCH", "6. METRONOME", "7. DICE ROLLER"
+  };
+
+  int start = (menuIdx > 4) ? menuIdx - 4 : 0;
+  for(int i=0; i<5; i++) {
+    int actualIdx = start + i;
+    if(actualIdx >= 7) break;
+    if(menuIdx == actualIdx) u8g2.drawStr(10, 25 + (i*8), ">");
+    u8g2.drawStr(18, 25 + (i*8), apps[actualIdx]);
+  }
+}
+
+void drawCalculator() {
+  u8g2.setFont(u8g2_font_5x7_tf);
+  u8g2.drawFrame(5, 5, 118, 15);
+  u8g2.setCursor(10, 16); 
+  if (calc_input == "" && calc_op == ' ') u8g2.print("0");
+  else u8g2.print(calc_input);
+
+  for(int i=0; i<16; i++) {
+    int x = (i % 4) * 20 + 25;
+    int y = (i / 4) * 10 + 30;
+    if (calc_cursor == i) u8g2.drawFrame(x-2, y-7, 14, 9);
+    u8g2.setCursor(x, y); 
+    if (calc_keys[i] == 'C') u8g2.print("AC");
+    else u8g2.print(calc_keys[i]);
+  }
+  u8g2.setFont(u8g2_font_4x6_tf);
+  u8g2.drawStr(5, 62, "D5: ALL CLEAR");
+}
+
+void drawCalendar() {
+  u8g2.setFont(u8g2_font_5x7_tf);
+  u8g2.setCursor(5, 10); u8g2.print(monthNames[cal_month-1]); u8g2.print(" "); u8g2.print(cal_year);
+  u8g2.drawStr(5, 20, "M  T  W  T  F  S  S");
+  int startDay = getStartDay(cal_year, cal_month);
+  int days = daysInMonth(cal_year, cal_month);
+  for(int d=1; d<=days; d++) {
+    int pos = startDay + d - 1;
+    int x = (pos % 7) * 15 + 5;
+    int y = (pos / 7) * 8 + 30;
+    u8g2.setCursor(x, y); u8g2.print(d);
+  }
+}
+
+void drawTimer() {
+  u8g2.setFont(u8g2_font_10x20_tf);
+  long remaining = timer_running ? (long)timer_duration - (long)((millis() - timer_start) / 1000) : timer_duration;
+  if(remaining <= 0) { 
+    if (timer_running) playSfx(1500, 1000);
+    remaining = 0; timer_running = false; 
+  }
+  int mins = remaining / 60;
+  int secs = remaining % 60;
+  u8g2.setCursor(35, 35);
+  if(mins < 10) u8g2.print("0"); u8g2.print(mins); u8g2.print(":");
+  if(secs < 10) u8g2.print("0"); u8g2.print(secs);
+  u8g2.setFont(u8g2_font_4x6_tf);
+  u8g2.drawStr(30, 55, timer_running ? "D11: PAUSE" : "D11: START");
+  u8g2.drawStr(80, 55, "D5: +1M");
+}
+
+void drawSynth() {
+  u8g2.setFont(u8g2_font_5x7_tf);
+  u8g2.drawStr(10, 15, "SIGNAL GENERATOR");
+  int freq = map(analogRead(STICK_X), 0, 1023, 100, 3000);
+  u8g2.setCursor(10, 35); u8g2.print("FREQ: "); u8g2.print(freq); u8g2.print("Hz");
+  if(digitalRead(BTN_SELECT) == LOW) u8g2.drawBox(10, 45, (freq/30), 5);
+}
+
+void drawStopwatch() {
+  u8g2.setFont(u8g2_font_10x20_tf);
+  unsigned long current = sw_running ? (sw_elapsed + (millis() - sw_start)) : sw_elapsed;
+  int mins = (current / 60000);
+  int secs = (current / 1000) % 60;
+  int ms = (current % 1000) / 10;
+  
+  u8g2.setCursor(20, 35);
+  if(mins < 10) u8g2.print("0"); u8g2.print(mins); u8g2.print(":");
+  if(secs < 10) u8g2.print("0"); u8g2.print(secs); u8g2.print(".");
+  if(ms < 10) u8g2.print("0"); u8g2.print(ms);
+
+  u8g2.setFont(u8g2_font_4x6_tf);
+  u8g2.drawStr(10, 55, "D11: START/STOP");
+  u8g2.drawStr(80, 55, "D5: RESET");
+}
+
+void drawMetronome() {
+  u8g2.setFont(u8g2_font_7x14_tf);
+  u8g2.drawStr(30, 20, "METRONOME");
+  u8g2.setFont(u8g2_font_10x20_tf);
+  u8g2.setCursor(40, 45); u8g2.print(metro_bpm);
+  u8g2.setFont(u8g2_font_5x7_tf);
+  u8g2.drawStr(80, 42, "BPM");
+  
+  // Visual Pendulum
+  int phase = (millis() % (60000 / metro_bpm)) < 100 ? 1 : 0;
+  if(phase) u8g2.drawDisc(64, 55, 4);
+  else u8g2.drawCircle(64, 55, 4);
+}
+
+void drawDice() {
+  u8g2.setFont(u8g2_font_7x14_tf);
+  u8g2.drawStr(25, 20, "DICE ROLLER");
+  u8g2.setFont(u8g2_font_10x20_tf);
+  u8g2.setCursor(50, 48); 
+  if(dice_result == 0) u8g2.print("?"); else u8g2.print(dice_result);
+  
+  u8g2.setFont(u8g2_font_5x7_tf);
+  u8g2.setCursor(10, 60); u8g2.print("SIDES: D"); u8g2.print(dice_sides);
+  u8g2.drawStr(80, 60, "D11: ROLL");
+}
+
+// --- INPUT HANDLING ---
+
+void handleInput() {
+  if (millis() - lastInput < 150) return;
+  int sx = analogRead(STICK_X);
+  int sy = analogRead(STICK_Y);
+  bool select = (digitalRead(BTN_SELECT) == LOW);
+  bool back = (digitalRead(BTN_BACK) == LOW);
+  bool aux = (digitalRead(BTN_AUX) == LOW);
+
+  if (back && currentState != HOME) {
+    currentState = HOME;
+    sw_running = false; // Stop timers on exit
+    timer_running = false;
+    playSfx(400, 50);
+    lastInput = millis();
+    return;
+  }
+
+  switch(currentState) {
+    case HOME:
+      if (sy < 350) { menuIdx = max(0, menuIdx - 1); lastInput = millis(); playSfx(1000, 10); }
+      else if (sy > 650) { menuIdx = min(6, menuIdx + 1); lastInput = millis(); playSfx(1000, 10); }
+      if (select) {
+        if(menuIdx == 0) currentState = CALCULATOR;
+        if(menuIdx == 1) currentState = CALENDAR;
+        if(menuIdx == 2) currentState = TIMER;
+        if(menuIdx == 3) currentState = SYNTH;
+        if(menuIdx == 4) currentState = STOPWATCH;
+        if(menuIdx == 5) currentState = METRONOME;
+        if(menuIdx == 6) currentState = DICE;
+        playSfx(1200, 50); lastInput = millis();
+      }
+      break;
+
+    case CALCULATOR:
+      if (sx < 350) { calc_cursor = (calc_cursor % 4 == 0) ? calc_cursor : calc_cursor - 1; lastInput = millis(); }
+      else if (sx > 650) { calc_cursor = (calc_cursor % 4 == 3) ? calc_cursor : calc_cursor + 1; lastInput = millis(); }
+      if (sy < 350) { calc_cursor = (calc_cursor < 4) ? calc_cursor : calc_cursor - 4; lastInput = millis(); }
+      else if (sy > 650) { calc_cursor = (calc_cursor > 11) ? calc_cursor : calc_cursor + 4; lastInput = millis(); }
+      if (aux) { calc_input = ""; calc_val1 = 0; calc_val2 = 0; calc_op = ' '; playSfx(300, 100); lastInput = millis(); }
+      if (select) {
+        char key = calc_keys[calc_cursor];
+        if (key >= '0' && key <= '9') calc_input += key;
+        else if (key == 'C') { calc_input = ""; calc_val1 = 0; calc_val2 = 0; calc_op = ' '; playSfx(300, 80); }
+        else if (key == '=') {
+          calc_val2 = calc_input.toFloat();
+          if (calc_op == '+') calc_val1 += calc_val2;
+          else if (calc_op == '-') calc_val1 -= calc_val2;
+          else if (calc_op == '*') calc_val1 *= calc_val2;
+          else if (calc_op == '/') if(calc_val2 != 0) calc_val1 /= calc_val2;
+          calc_input = String(calc_val1); calc_op = ' ';
+        } else { calc_val1 = calc_input.toFloat(); calc_op = key; calc_input = ""; }
+        playSfx(800, 20); lastInput = millis();
+      }
+      break;
+
+    case CALENDAR:
+      if (sx < 350) { cal_month--; if(cal_month<1){cal_month=12; cal_year--;} lastInput = millis(); }
+      else if (sx > 650) { cal_month++; if(cal_month>12){cal_month=1; cal_year++;} lastInput = millis(); }
+      break;
+
+    case TIMER:
+      if (select) { timer_running = !timer_running; if(timer_running) timer_start = millis(); lastInput = millis(); }
+      if (aux) { timer_duration += 60; lastInput = millis(); }
+      break;
+      
+    case SYNTH:
+      if (select) { int freq = map(sx, 0, 1023, 100, 3000); playSfx(freq, 20); }
+      break;
+
+    case STOPWATCH:
+      if (select) {
+        if(!sw_running) { sw_start = millis(); sw_running = true; }
+        else { sw_elapsed += (millis() - sw_start); sw_running = false; }
+        lastInput = millis(); playSfx(1000, 20);
+      }
+      if (aux) { sw_elapsed = 0; sw_running = false; lastInput = millis(); playSfx(500, 50); }
+      break;
+
+    case METRONOME:
+      if (sy < 350) { metro_bpm = min(240, metro_bpm + 1); lastInput = millis(); }
+      if (sy > 650) { metro_bpm = max(40, metro_bpm - 1); lastInput = millis(); }
+      break;
+
+    case DICE:
+      if (sy < 350) { dice_sides = min(100, dice_sides + 1); lastInput = millis(); }
+      if (sy > 650) { dice_sides = max(2, dice_sides - 1); lastInput = millis(); }
+      if (select) { dice_result = random(1, dice_sides + 1); playSfx(1500, 50); lastInput = millis(); }
+      break;
+  }
+}
+
+void setup() {
+  pinMode(BTN_SELECT, INPUT_PULLUP);
+  pinMode(BTN_BACK,   INPUT_PULLUP);
+  pinMode(BTN_MODE,   INPUT_PULLUP);
+  pinMode(BTN_AUX,    INPUT_PULLUP);
+  pinMode(BZ_OUT,     OUTPUT);
+  pinMode(BZ_OUT2,    OUTPUT);
+  u8g2.begin();
+  randomSeed(analogRead(A2));
+  playSfx(1500, 80);
+}
+
+void loop() {
+  handleInput();
+  
+  // Background logic for metronome
+  if(currentState == METRONOME) {
+    if(millis() - metro_last_tick > (60000 / metro_bpm)) {
+      playSfx(2000, 10);
+      metro_last_tick = millis();
+    }
+  }
+
+  u8g2.firstPage();
+  do {
+    switch(currentState) {
+      case HOME: drawHome(); break;
+      case CALCULATOR: drawCalculator(); break;
+      case CALENDAR: drawCalendar(); break;
+      case TIMER: drawTimer(); break;
+      case SYNTH: drawSynth(); break;
+      case STOPWATCH: drawStopwatch(); break;
+      case METRONOME: drawMetronome(); break;
+      case DICE: drawDice(); break;
+    }
+  } while (u8g2.nextPage());
+}

@@ -1,0 +1,288 @@
+#include <Arduino.h>
+#include <U8g2lib.h>
+#include <Wire.h>
+
+// SH1106 128x64 I2C - Page Buffer mode for Arduino Nano (2KB RAM)
+U8G2_SH1106_128X64_NONAME_1_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+
+// --- PIN DEFINITIONS ---
+#define STICK_X    A0
+#define STICK_Y    A1
+#define BTN_ACT    11 // Launch Ball / Confirm
+#define BTN_SHIELD 10 // Activate Shield
+#define BTN_MENU   9  // Open Stats / Pause
+#define BTN_MISSILE 5 // Tactical Missile (D5)
+#define BZ_OUT     3  // Speaker 1
+#define BZ_OUT2    6  // Speaker 2
+
+// --- GAME CONSTANTS ---
+#define BRICK_W    12
+#define BRICK_H    5
+#define ROWS       5
+#define COLS       8
+#define PADDLE_W   16
+#define PADDLE_H   3
+
+enum GameState { TITLE, PLAYING, STATS_MENU, UPGRADE, GAMEOVER };
+
+struct Ball {
+  float x, y, vx, vy;
+  bool active;
+};
+
+struct Brick {
+  bool active;
+  int hp;
+  bool sentinel; 
+};
+
+struct Projectile {
+  float x, y;
+  bool active;
+};
+
+// --- GLOBAL STATE ---
+GameState state = TITLE;
+Ball ball;
+Brick bricks[COLS][ROWS];
+Projectile pulse;   // Enemy fire
+Projectile missile; // Player fire
+
+int paddleX = 56;
+int hp = 40, maxHp = 40;
+int xp = 0, xpNext = 150;
+int depth = 1;
+int pWidth = PADDLE_W;
+int ballDmg = 1;
+bool shieldActive = false;
+int shieldEnergy = 100;
+int missileCooldown = 0;
+#define MISSILE_RELOAD 150
+
+// --- AUDIO ---
+void playSfx(int f, int d) { 
+  tone(BZ_OUT, f, d); 
+  tone(BZ_OUT2, f, d); 
+}
+
+// --- HARDWARE-SAFE DRAWING ---
+void safeLine(int x1, int y1, int x2, int y2) {
+  x1 = constrain(x1, 0, 127); x2 = constrain(x2, 0, 127);
+  y1 = constrain(y1, 0, 63);  y2 = constrain(y2, 0, 63);
+  u8g2.drawLine(x1, y1, x2, y2);
+}
+void safeBox(int x, int y, int w, int h) {
+  int x1 = constrain(x, 0, 127); int y1 = constrain(y, 0, 63);
+  int x2 = constrain(x + w, 0, 127); int y2 = constrain(y + h, 0, 63);
+  if (x2 <= x1 || y2 <= y1) return;
+  u8g2.drawBox(x1, y1, x2 - x1, y2 - y1);
+}
+void safeFrame(int x, int y, int w, int h) {
+  int x1 = constrain(x, 0, 127); int y1 = constrain(y, 0, 63);
+  int x2 = constrain(x + w, 0, 127); int y2 = constrain(y + h, 0, 63);
+  if (x2 <= x1 || y2 <= y1) return;
+  u8g2.drawFrame(x1, y1, x2 - x1, y2 - y1);
+}
+
+// --- LOGIC ---
+void initLevel() {
+  for(int x=0; x<COLS; x++) {
+    for(int y=0; y<ROWS; y++) {
+      bricks[x][y].active = true;
+      bricks[x][y].hp = 1 + (depth / 3);
+      bricks[x][y].sentinel = (random(0, 10) > 7);
+    }
+  }
+  ball.active = false;
+  ball.x = 64; ball.y = 50;
+  pulse.active = false;
+  missile.active = false;
+  missileCooldown = 0;
+}
+
+void checkCollision() {
+  if (ball.x <= 0 || ball.x >= 127) { ball.vx *= -1; playSfx(400, 10); }
+  if (ball.y <= 0) { ball.vy *= -1; playSfx(400, 10); }
+  
+  if (ball.y >= 56 && ball.y <= 58) {
+    if (ball.x >= paddleX && ball.x <= paddleX + pWidth) {
+      ball.vy *= -1;
+      ball.vx = (ball.x - (paddleX + pWidth/2.0f)) / (pWidth/4.0f);
+      playSfx(600, 20);
+    }
+  }
+  
+  if (ball.y > 64) {
+    hp -= 10; ball.active = false;
+    playSfx(150, 200);
+    if (hp <= 0) state = GAMEOVER;
+  }
+
+  int bx = (int)ball.x / (128 / COLS);
+  int by = (int)(ball.y - 10) / (BRICK_H + 2);
+  if (bx >= 0 && bx < COLS && by >= 0 && by < ROWS && bricks[bx][by].active) {
+    bricks[bx][by].hp -= ballDmg;
+    ball.vy *= -1;
+    if (bricks[bx][by].hp <= 0) {
+      bricks[bx][by].active = false;
+      xp += 15;
+      if (xp >= xpNext) { xp -= xpNext; xpNext += 50; playSfx(1500, 100); }
+      playSfx(800, 30);
+      if (bricks[bx][by].sentinel && !pulse.active) {
+        pulse.x = bx * (128/COLS) + 6; pulse.y = by * (BRICK_H+2) + 10; pulse.active = true;
+      }
+    } else playSfx(300, 15);
+  }
+}
+
+void update() {
+  if (state != PLAYING) return;
+
+  if (missileCooldown > 0) missileCooldown--;
+
+  int stickX = analogRead(STICK_X);
+  if (stickX < 400) paddleX -= 3;
+  if (stickX > 624) paddleX += 3;
+  paddleX = constrain(paddleX, 0, 128 - pWidth);
+
+  if (ball.active) {
+    ball.x += ball.vx; ball.y += ball.vy;
+    checkCollision();
+  } else {
+    ball.x = paddleX + pWidth / 2; ball.y = 55;
+    if (digitalRead(BTN_ACT) == LOW) { ball.active = true; ball.vx = 1.0; ball.vy = -1.2; playSfx(1000, 50); }
+  }
+
+  // Player Missile Logic
+  if (missile.active) {
+    missile.y -= 2.5f;
+    if (missile.y < 0) missile.active = false;
+    int mbx = (int)missile.x / (128 / COLS);
+    int mby = (int)(missile.y - 10) / (BRICK_H + 2);
+    if (mbx >= 0 && mbx < COLS && mby >= 0 && mby < ROWS && bricks[mbx][mby].active) {
+      bricks[mbx][mby].hp -= (ballDmg * 2);
+      if (bricks[mbx][mby].hp <= 0) {
+        bricks[mbx][mby].active = false;
+        xp += 10;
+        playSfx(900, 40);
+      }
+      missile.active = false;
+    }
+  }
+
+  // Enemy Pulse Logic
+  if (pulse.active) {
+    pulse.y += 1.2f;
+    if (pulse.y > 64) pulse.active = false;
+    if (pulse.active && pulse.y >= 56 && pulse.y <= 59 && abs(pulse.x - (paddleX + pWidth/2)) < pWidth/2) {
+      if (shieldActive) { playSfx(1500, 20); }
+      else { hp -= 5; playSfx(100, 50); if (hp <= 0) state = GAMEOVER; }
+      pulse.active = false;
+    }
+  }
+
+  if (digitalRead(BTN_SHIELD) == LOW && shieldEnergy > 0) {
+    shieldActive = true; shieldEnergy -= 2;
+  } else {
+    shieldActive = false;
+    if (shieldEnergy < 100) shieldEnergy++;
+  }
+
+  bool clear = true;
+  for(int x=0; x<COLS; x++) for(int y=0; y<ROWS; y++) if(bricks[x][y].active) clear = false;
+  if (clear) { depth++; state = UPGRADE; playSfx(1200, 150); }
+}
+
+void draw() {
+  u8g2.firstPage();
+  do {
+    if (state == TITLE) {
+      u8g2.setFont(u8g2_font_7x14_tf); u8g2.drawStr(25, 30, "BREAK-LINK");
+      u8g2.setFont(u8g2_font_4x6_tf); u8g2.drawStr(30, 50, "PRESS D11 TO BREACH");
+    } 
+    else if (state == STATS_MENU) { // ADDED MISSING STATS SCREEN DRAWING
+      u8g2.setFont(u8g2_font_6x12_tf); u8g2.drawStr(10, 15, "--- SYSTEM STATS ---");
+      u8g2.setFont(u8g2_font_5x7_tf);
+      u8g2.setCursor(10, 30); u8g2.print("DEPTH NODE: "); u8g2.print(depth);
+      u8g2.setCursor(10, 40); u8g2.print("BIT DAMAGE: "); u8g2.print(ballDmg);
+      u8g2.setCursor(10, 50); u8g2.print("PAD WIDTH:  "); u8g2.print(pWidth);
+      u8g2.setCursor(10, 60); u8g2.print("XP GAIN:    "); u8g2.print(xp); u8g2.print("/"); u8g2.print(xpNext);
+    }
+    else if (state == UPGRADE) {
+      u8g2.setFont(u8g2_font_6x12_tf); u8g2.drawStr(10, 20, "NODE CLEARED");
+      u8g2.setFont(u8g2_font_5x7_tf);
+      u8g2.drawStr(10, 35, "UP: +PADDLE SIZE");
+      u8g2.drawStr(10, 45, "DN: +BIT DAMAGE");
+      u8g2.drawStr(10, 55, "D11: +REPAIR INTEGRITY");
+    }
+    else if (state == GAMEOVER) {
+      u8g2.setFont(u8g2_font_7x14_tf); u8g2.drawStr(25, 35, "JACKED OUT");
+      u8g2.setFont(u8g2_font_4x6_tf); u8g2.drawStr(40, 50, "REBOOT?");
+    }
+    else {
+      for(int x=0; x<COLS; x++) {
+        for(int y=0; y<ROWS; y++) {
+          if (bricks[x][y].active) {
+            int bx = x * (128/COLS);
+            int by = y * (BRICK_H+2) + 10;
+            if (bricks[x][y].sentinel) safeBox(bx+1, by+1, BRICK_W-2, BRICK_H-2);
+            else safeFrame(bx+1, by+1, BRICK_W-2, BRICK_H-2);
+          }
+        }
+      }
+      safeBox(paddleX, 58, pWidth, PADDLE_H);
+      if (shieldActive) safeFrame(paddleX - 2, 56, pWidth + 4, 6);
+      if (ball.active) safeBox(ball.x - 1, ball.y - 1, 3, 3);
+      if (pulse.active) safeLine(pulse.x, pulse.y, pulse.x, pulse.y+3);
+      if (missile.active) safeBox(missile.x - 1, missile.y, 2, 4);
+
+      u8g2.setFont(u8g2_font_4x6_tf);
+      u8g2.setCursor(2, 8); u8g2.print("HP:"); u8g2.print(hp);
+      u8g2.setCursor(35, 8); u8g2.print("AMMO:"); 
+      if(missileCooldown > 0) u8g2.drawHLine(55, 6, (MISSILE_RELOAD - missileCooldown)/10);
+      else u8g2.print("READY");
+      u8g2.setCursor(105, 8); u8g2.print("D:"); u8g2.print(depth);
+    }
+  } while (u8g2.nextPage());
+}
+
+void setup() {
+  pinMode(BTN_ACT, INPUT_PULLUP);
+  pinMode(BTN_SHIELD, INPUT_PULLUP);
+  pinMode(BTN_MENU, INPUT_PULLUP);
+  pinMode(BTN_MISSILE, INPUT_PULLUP);
+  u8g2.begin();
+  randomSeed(analogRead(A2));
+}
+
+void loop() {
+  static unsigned long lastBtn = 0;
+  if (digitalRead(BTN_MENU) == LOW && millis() - lastBtn > 300) {
+    if (state == PLAYING) state = STATS_MENU;
+    else if (state == STATS_MENU) state = PLAYING;
+    playSfx(500, 50); lastBtn = millis();
+  }
+
+  // Missile Launch (D5)
+  if (digitalRead(BTN_MISSILE) == LOW && missileCooldown == 0 && state == PLAYING) {
+    missile.active = true;
+    missile.x = paddleX + pWidth/2;
+    missile.y = 55;
+    missileCooldown = MISSILE_RELOAD;
+    playSfx(1400, 40);
+  }
+
+  if (state == TITLE) {
+    if (digitalRead(BTN_ACT) == LOW) { initLevel(); state = PLAYING; }
+  } else if (state == UPGRADE) {
+    int sy = analogRead(STICK_Y);
+    if (sy < 300) { pWidth = min(40, pWidth + 4); state = PLAYING; initLevel(); delay(200); }
+    else if (sy > 700) { ballDmg++; state = PLAYING; initLevel(); delay(200); }
+    else if (digitalRead(BTN_ACT) == LOW) { hp = min(maxHp, hp + 20); state = PLAYING; initLevel(); delay(200); }
+  } else if (state == GAMEOVER) {
+    if (digitalRead(BTN_ACT) == LOW) { hp = maxHp; depth = 1; xp = 0; state = TITLE; delay(200); }
+  } else if (state == PLAYING) {
+    update();
+  }
+  draw();
+}

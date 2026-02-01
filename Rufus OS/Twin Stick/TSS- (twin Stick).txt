@@ -1,0 +1,173 @@
+#include <Arduino.h>
+#include <U8g2lib.h>
+#include <Wire.h>
+
+U8G2_SH1107_PIMORONI_128X128_1_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+
+#define L_X A0 
+#define L_Y A1 
+#define R_X A2 
+#define R_Y A3
+#define L_SW 2  
+#define R_SW 3  
+#define BZ 8 
+
+// --- RPG DATA ---
+int level = 1, curExp = 0, expNext = 100;
+int hp = 100, maxHp = 100;
+int pSpeed = 4, fireDelay = 300;
+int scrap = 0, upgradePoints = 0;
+
+// --- OBJECTS ---
+int px=64, py=64;
+int ex[2], ey[2]; 
+bool eActive[2] = {false, false};
+float lastAngle = 0; // Tracks the spawn angle of the first enemy
+
+int bx=-10, by=-10, bvx=0, bvy=0;
+int lx_pos=-10, ly_pos=-10; 
+bool lootActive = false, isPaused = false, isDead = false;
+int menuIdx = 0;
+
+void sfx(int f, int d) { tone(BZ, f, d); }
+
+void spawnEnemy(int i) {
+  if (i == 0) {
+    // Enemy 0 spawns at a random edge
+    lastAngle = random(0, 360);
+  } else {
+    // Enemy 1 spawns 160 degrees away from Enemy 0
+    lastAngle += 160;
+  }
+  
+  float rad = lastAngle * 0.0174533; // Convert to radians
+  // Project to the edge of the 128x128 arena
+  ex[i] = 64 + cos(rad) * 55;
+  ey[i] = 64 + sin(rad) * 55;
+  
+  ex[i] = constrain(ex[i], 5, 120);
+  ey[i] = constrain(ey[i], 5, 120);
+  eActive[i] = true;
+}
+
+void setup() {
+  u8g2.begin();
+  u8g2.setBusClock(400000);
+  pinMode(L_SW, INPUT_PULLUP); 
+  pinMode(R_SW, INPUT_PULLUP);
+  pinMode(BZ, OUTPUT);
+  spawnEnemy(0);
+  spawnEnemy(1);
+}
+
+void loop() {
+  if (isDead) {
+    if (digitalRead(R_SW) == LOW || digitalRead(L_SW) == LOW) {
+      hp = 100; scrap = 0; level = 1; curExp = 0; isDead = false; 
+      pSpeed = 4; fireDelay = 300; spawnEnemy(0); spawnEnemy(1);
+    }
+    return;
+  }
+
+  int lx_in = analogRead(L_X); int ly_in = analogRead(L_Y);
+  int rx_in = analogRead(R_X); int ry_in = analogRead(R_Y);
+  bool lClick = (digitalRead(L_SW) == LOW);
+  bool rClick = (digitalRead(R_SW) == LOW);
+
+  static bool lastR = false;
+  if (rClick && !lastR) { isPaused = !isPaused; sfx(600, 50); }
+  lastR = rClick;
+
+  if (isPaused) {
+    if (lx_in < 400) { menuIdx = 0; delay(150); }
+    if (lx_in > 600) { menuIdx = 1; delay(150); }
+    if (ly_in > 600) { menuIdx = 2; delay(150); }
+    
+    if (lClick && (scrap >= 50 || upgradePoints > 0)) {
+      if (menuIdx == 0) pSpeed++;
+      if (menuIdx == 1) fireDelay = max(80, fireDelay - 40);
+      if (menuIdx == 2) { maxHp += 25; hp = maxHp; }
+      if (upgradePoints > 0) upgradePoints--; else scrap -= 50;
+      sfx(1200, 100); delay(300);
+    }
+  } else {
+    // --- MOVEMENT: LOCKED PERFECT ---
+    if (lx_in > 600) py += pSpeed; if (lx_in < 400) py -= pSpeed; 
+    if (ly_in > 600) px -= pSpeed; if (ly_in < 400) px += pSpeed; 
+    px = constrain(px, 5, 122); py = constrain(py, 5, 122);
+
+    // --- SHOOTING: LOCKED PERFECT 8-WAY ---
+    static uint32_t lastB = 0;
+    if (bx < 0 && (millis() - lastB > (uint32_t)fireDelay)) {
+      int dx = 0, dy = 0;
+      if (rx_in < 400) dy = 10; else if (rx_in > 600) dy = -10; 
+      if (ry_in > 600) dx = 10; else if (ry_in < 400) dx = -10; 
+      if (dx != 0 || dy != 0) { bx = px; by = py; bvx = dx; bvy = dy; lastB = millis(); sfx(150, 15); }
+    }
+
+    // --- PHYSICS ---
+    if (bx >= 0) {
+      bx += bvx; by += bvy;
+      if (bx<0 || bx>128 || by<0 || by>128) bx = -10;
+      for (int i=0; i<2; i++) {
+        if (eActive[i] && abs(bx-ex[i])<10 && abs(by-ey[i])<10) { 
+          lx_pos = ex[i]; ly_pos = ey[i]; lootActive = true;
+          bx = -10; eActive[i] = false; sfx(2000, 20);
+          spawnEnemy(i); 
+        }
+      }
+    }
+    
+    if (lootActive && abs(px-lx_pos)<8 && abs(py-ly_pos)<8) {
+      lootActive = false; scrap += 25; curExp += 25; sfx(1500, 30);
+      if (curExp >= expNext) { level++; curExp = 0; hp = maxHp; expNext += 50; upgradePoints++; sfx(2500, 200); }
+    }
+
+    for (int i=0; i<2; i++) {
+      if (eActive[i]) {
+        if (ex[i] < px) ex[i]++; else ex[i]--;
+        if (ey[i] < py) ey[i]++; else ey[i]--;
+        if (abs(px-ex[i]) < 6 && abs(py-ey[i]) < 6) {
+          hp -= 20; eActive[i] = false; sfx(80, 150);
+          if (hp <= 0) isDead = true;
+          spawnEnemy(i);
+        }
+      }
+    }
+  }
+
+  u8g2.firstPage();
+  do {
+    if (isDead) {
+      u8g2.setFont(u8g2_font_6x10_tf); u8g2.setFontDirection(3);
+      u8g2.setCursor(100, 115); u8g2.print("CRITICAL FAILURE");
+      u8g2.setCursor(75, 110);  u8g2.print("REBOOT SYSTEM");
+    } else if (isPaused) {
+      u8g2.setFont(u8g2_font_6x10_tf); u8g2.setFontDirection(3);
+      u8g2.setCursor(122, 115); u8g2.print("- MARKET -");
+      u8g2.setCursor(102, 100); u8g2.print(menuIdx == 0 ? "> ENGINE" : "  ENGINE");
+      u8g2.setCursor(87, 100);  u8g2.print(menuIdx == 1 ? "> TURRET" : "  TURRET");
+      u8g2.setCursor(72, 100);  u8g2.print(menuIdx == 2 ? "> HULL" : "  HULL");
+      u8g2.setCursor(45, 100);  u8g2.print("SCRAP: $"); u8g2.print(scrap);
+      u8g2.setCursor(30, 100);  u8g2.print("UPGRD: "); u8g2.print(upgradePoints);
+    } else {
+      u8g2.drawFrame(0, 0, 128, 128);
+      // Player: Hex Core
+      u8g2.drawFrame(px-4, py-4, 9, 9); u8g2.drawDisc(px, py, 1);
+      // Enemies: Star Drones
+      for(int i=0; i<2; i++) {
+        if (eActive[i]) { u8g2.drawHLine(ex[i]-4, ey[i], 9); u8g2.drawVLine(ex[i], ey[i]-4, 9); }
+      }
+      if (lootActive) u8g2.drawFrame(lx_pos-2, ly_pos-2, 5, 5);
+      if (bx >= 0) u8g2.drawBox(bx-1, by-1, 3, 3);
+
+      // HUD
+      u8g2.setFont(u8g2_font_4x6_tf); u8g2.setFontDirection(3);
+      u8g2.setCursor(122, 122); u8g2.print("LV:"); u8g2.print(level);
+      u8g2.setCursor(122, 100); u8g2.print("HP:"); u8g2.print(hp);
+      u8g2.setCursor(122, 70);  u8g2.print("$:"); u8g2.print(scrap);
+      u8g2.drawFrame(115, 20, 3, 40);
+      u8g2.drawBox(115, 20, 3, map(curExp, 0, expNext, 0, 40));
+    }
+  } while (u8g2.nextPage());
+}

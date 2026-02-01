@@ -1,0 +1,263 @@
+#include <Arduino.h>
+#include <U8g2lib.h>
+#include <Wire.h>
+
+// SH1106 128x64 I2C
+U8G2_SH1106_128X64_NONAME_1_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+
+// --- PIN DEFINITIONS ---
+#define STICK_X    A0
+#define STICK_Y    A1
+#define BTN_CONFIRM 11 // Select Card / Place Card
+#define BTN_CANCEL  10 // Return to Hand
+#define BTN_STATS   9  // View Card Details
+#define BZ_OUT      3  
+
+// --- GAME CONSTANTS ---
+#define GRID_SIZE 3
+#define CELL_W 20
+#define HAND_SIZE 5
+
+// --- STRUCTURES ---
+struct Card {
+  uint8_t v[4]; // 0: Top, 1: Right, 2: Bottom, 3: Left (Values 1-10)
+  bool isPlayer; // true = Player (White/Outline), false = CPU (Black/Solid)
+  bool used;
+};
+
+struct BoardCell {
+  int8_t cardIdx; // Index in cards array
+  bool occupied;
+};
+
+enum GameState { STATE_TITLE, STATE_CHOOSE_CARD, STATE_PLACE_CARD, STATE_CPU_TURN, STATE_RESULT };
+
+// --- GLOBAL STATE ---
+Card deck[10]; // 0-4 Player, 5-9 CPU
+BoardCell board[GRID_SIZE][GRID_SIZE];
+GameState state = STATE_TITLE;
+
+int8_t cursorX = 0, cursorY = 0;
+int8_t selectedHandIdx = 0;
+int8_t pScore = 5, cScore = 5;
+
+// --- UTILITIES ---
+void playSfx(int f, int d) { tone(BZ_OUT, f, d); }
+
+void initGame() {
+  pScore = 5; cScore = 5;
+  for(int i=0; i<GRID_SIZE; i++) {
+    for(int j=0; j<GRID_SIZE; j++) board[i][j] = {-1, false};
+  }
+  
+  // Generate random cards
+  for(int i=0; i<10; i++) {
+    for(int j=0; j<4; j++) deck[i].v[j] = random(1, 10);
+    deck[i].isPlayer = (i < 5);
+    deck[i].used = false;
+  }
+  state = STATE_CHOOSE_CARD;
+  playSfx(880, 100);
+}
+
+void checkCapture(int x, int y) {
+  int8_t currentIdx = board[x][y].cardIdx;
+  bool isP = deck[currentIdx].isPlayer;
+  
+  // Directions: Top, Right, Bottom, Left
+  int dx[] = {0, 1, 0, -1};
+  int dy[] = {-1, 0, 1, 0};
+  int oppSide[] = {2, 3, 0, 1}; // Side of the neighbor card being compared
+
+  for(int i=0; i<4; i++) {
+    int nx = x + dx[i];
+    int ny = y + dy[i];
+    
+    if(nx >= 0 && nx < GRID_SIZE && ny >= 0 && ny < GRID_SIZE && board[nx][ny].occupied) {
+      int8_t neighborIdx = board[nx][ny].cardIdx;
+      // If owner is different and our side > their touching side
+      if(deck[neighborIdx].isPlayer != isP) {
+        if(deck[currentIdx].v[i] > deck[neighborIdx].v[oppSide[i]]) {
+          deck[neighborIdx].isPlayer = isP; // FLIP!
+          playSfx(1200, 50);
+        }
+      }
+    }
+  }
+  
+  // Recalculate score
+  pScore = 0; cScore = 0;
+  for(int i=0; i<10; i++) {
+    if(deck[i].isPlayer) pScore++; else cScore++;
+  }
+}
+
+void cpuTurn() {
+  int8_t cardToUse = -1;
+  for(int i=5; i<10; i++) if(!deck[i].used) { cardToUse = i; break; }
+  
+  if(cardToUse == -1) { state = STATE_RESULT; return; }
+
+  for(int y=0; y<GRID_SIZE; y++) {
+    for(int x=0; x<GRID_SIZE; x++) {
+      if(!board[x][y].occupied) {
+        board[x][y] = {cardToUse, true};
+        deck[cardToUse].used = true;
+        checkCapture(x, y);
+        state = STATE_CHOOSE_CARD;
+        return;
+      }
+    }
+  }
+}
+
+// --- DRAWING ---
+void drawCard(int x, int y, int8_t idx, bool small) {
+  if(idx < 0) return;
+  Card c = deck[idx];
+  
+  if(c.isPlayer) u8g2.drawFrame(x, y, CELL_W, CELL_W);
+  else u8g2.drawBox(x, y, CELL_W, CELL_W);
+  
+  u8g2.setDrawColor(c.isPlayer ? 1 : 0);
+  u8g2.setFont(u8g2_font_4x6_tf);
+  
+  auto printVal = [&](int v, int ox, int oy) {
+    u8g2.setCursor(x + ox, y + oy);
+    if(v == 10) u8g2.print("A"); else u8g2.print(v);
+  };
+  
+  printVal(c.v[0], 8, 6);  // Top
+  printVal(c.v[1], 15, 12); // Right
+  printVal(c.v[2], 8, 18); // Bottom
+  printVal(c.v[3], 2, 12); // Left
+  
+  u8g2.setDrawColor(1); // Reset
+}
+
+void drawUI() {
+  u8g2.firstPage();
+  do {
+    // 1. Draw Grid
+    for(int y=0; y<GRID_SIZE; y++) {
+      for(int x=0; x<GRID_SIZE; x++) {
+        int px = x * CELL_W + 5;
+        int py = y * CELL_W + 2;
+        u8g2.drawFrame(px, py, CELL_W, CELL_W);
+        if(board[x][y].occupied) drawCard(px, py, board[x][y].cardIdx, false);
+        
+        if(state == STATE_PLACE_CARD && cursorX == x && cursorY == y) {
+          u8g2.drawFrame(px-1, py-1, CELL_W+2, CELL_W+2);
+        }
+      }
+    }
+
+    // 2. Draw Hand Panel
+    u8g2.drawVLine(70, 0, 64);
+    u8g2.setFont(u8g2_font_4x6_tf);
+    for(int i=0; i<5; i++) {
+      int handY = i * 9 + 4;
+      if(!deck[i].used) {
+        if((state == STATE_CHOOSE_CARD || state == STATE_PLACE_CARD) && selectedHandIdx == i) {
+          u8g2.drawStr(72, handY+6, ">");
+        }
+        u8g2.setCursor(78, handY+6);
+        u8g2.print("C"); u8g2.print(i+1);
+      }
+    }
+
+    // 3. Card Preview (Selected Card Details)
+    if(state == STATE_CHOOSE_CARD || state == STATE_PLACE_CARD) {
+      u8g2.drawStr(98, 8, "PREVIEW");
+      drawCard(100, 12, selectedHandIdx, false);
+    }
+
+    // 4. Stats & Score
+    u8g2.setFont(u8g2_font_5x7_tf);
+    u8g2.setCursor(75, 55); u8g2.print("P:"); u8g2.print(pScore);
+    u8g2.setCursor(105, 55); u8g2.print("C:"); u8g2.print(cScore);
+    
+    if(state == STATE_RESULT) {
+      u8g2.drawBox(10, 20, 100, 25);
+      u8g2.setDrawColor(0);
+      u8g2.drawStr(25, 35, pScore > cScore ? "VICTORY!" : (pScore < cScore ? "DEFEAT..." : "DRAW"));
+      u8g2.setDrawColor(1);
+    }
+
+    if(state == STATE_TITLE) {
+      u8g2.drawBox(10, 20, 110, 30);
+      u8g2.setDrawColor(0);
+      u8g2.drawStr(35, 33, "BIT-TRIAD");
+      u8g2.drawStr(25, 43, "PRESS TO START");
+      u8g2.setDrawColor(1);
+    }
+    
+  } while (u8g2.nextPage());
+}
+
+// --- INPUT ---
+void handleInput() {
+  static unsigned long lastMove = 0;
+  if(millis() - lastMove < 200) return;
+
+  if(state == STATE_TITLE) {
+    if(digitalRead(BTN_CONFIRM) == LOW) initGame();
+    return;
+  }
+
+  int sx = analogRead(STICK_X);
+  int sy = analogRead(STICK_Y);
+
+  if(state == STATE_CHOOSE_CARD) {
+    if(sy < 300) { selectedHandIdx = max(0, selectedHandIdx - 1); lastMove = millis(); }
+    else if(sy > 700) { selectedHandIdx = min(4, selectedHandIdx + 1); lastMove = millis(); }
+    
+    if(digitalRead(BTN_CONFIRM) == LOW && !deck[selectedHandIdx].used) {
+      state = STATE_PLACE_CARD;
+      playSfx(600, 50);
+      lastMove = millis();
+    }
+  }
+  else if(state == STATE_PLACE_CARD) {
+    if(sy < 300) { cursorY = max(0, cursorY - 1); lastMove = millis(); }
+    else if(sy > 700) { cursorY = min(2, cursorY + 1); lastMove = millis(); }
+    if(sx < 300) { cursorX = max(0, cursorX - 1); lastMove = millis(); }
+    else if(sx > 700) { cursorX = min(2, cursorX + 1); lastMove = millis(); }
+
+    if(digitalRead(BTN_CANCEL) == LOW) { state = STATE_CHOOSE_CARD; lastMove = millis(); }
+    
+    if(digitalRead(BTN_CONFIRM) == LOW && !board[cursorX][cursorY].occupied) {
+      board[cursorX][cursorY] = {selectedHandIdx, true};
+      deck[selectedHandIdx].used = true;
+      checkCapture(cursorX, cursorY);
+      
+      bool full = true;
+      for(int y=0; y<3; y++) for(int x=0; x<3; x++) if(!board[x][y].occupied) full = false;
+      
+      if(full) state = STATE_RESULT;
+      else state = STATE_CPU_TURN;
+      
+      lastMove = millis();
+    }
+  }
+  else if(state == STATE_RESULT) {
+    if(digitalRead(BTN_CONFIRM) == LOW) state = STATE_TITLE;
+  }
+}
+
+void setup() {
+  pinMode(BTN_CONFIRM, INPUT_PULLUP);
+  pinMode(BTN_CANCEL, INPUT_PULLUP);
+  pinMode(BTN_STATS, INPUT_PULLUP);
+  u8g2.begin();
+  randomSeed(analogRead(A2));
+}
+
+void loop() {
+  handleInput();
+  if(state == STATE_CPU_TURN) {
+    delay(800);
+    cpuTurn();
+  }
+  drawUI();
+}

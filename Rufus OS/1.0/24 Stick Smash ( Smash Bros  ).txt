@@ -1,0 +1,345 @@
+#include <Arduino.h>
+#include <U8g2lib.h>
+#include <Wire.h>
+
+// SH1106 128x64 I2C
+U8G2_SH1106_128X64_NONAME_1_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+
+// --- PIN DEFINITIONS ---
+#define STICK_X    A0
+#define STICK_Y    A1
+#define BTN_LIGHT  11 // Light Attack
+#define BTN_HEAVY  10 // Smash Attack
+#define BTN_SPEC   9  // Neutral Special (Fireball)
+#define BTN_RECOV  5  // Up-Special (Recovery)
+#define BZ_OUT     3  
+
+// --- STAGE & BLAST ZONE CONSTANTS ---
+#define PLAT_X1    30
+#define PLAT_X2    98
+#define PLAT_Y     45
+#define BLAST_L    -40
+#define BLAST_R    168
+#define BLAST_D    100
+#define BLAST_U    -60
+
+// --- PHYSICS ---
+#define GRAVITY    0.18f
+#define FRICTION   0.88f
+#define WALK_SPD   0.85f   // Slightly faster
+#define JUMP_FORCE -3.9f
+
+// --- ENUMS ---
+enum State { IDLE, RUN, ATK_L, ATK_H, ATK_S, ATK_R, HITSTUN, DEAD };
+enum GameState { TITLE, MATCH, KO_SCREEN };
+
+// --- STRUCTURES ---
+struct Projectile {
+  float x, y, vx;
+  bool active;
+  bool ownerIsPlayer;
+};
+
+struct Fighter {
+  float x, y;
+  float vx, vy;
+  int damage; 
+  int stocks;
+  bool isPlayer;
+  bool facingRight;
+  bool canDoubleJump;
+  State state;
+  int timer;
+};
+
+// --- GLOBALS ---
+Fighter p, ai;
+Projectile fireball;
+GameState gState = TITLE;
+int shakeTimer = 0;
+
+// --- AUDIO ---
+void playSfx(int f, int d) { tone(BZ_OUT, f, d); }
+
+void initFighter(Fighter &f, bool isP) {
+  f.x = isP ? 45 : 83;
+  f.y = PLAT_Y - 5;
+  f.vx = 0; f.vy = 0;
+  f.damage = 0;
+  f.stocks = 3;
+  f.isPlayer = isP;
+  f.facingRight = isP;
+  f.canDoubleJump = true;
+  f.state = IDLE;
+  f.timer = 0;
+}
+
+// --- HARDWARE-SAFE CLAMPED DRAWING ---
+// These functions prevent coordinates from wrapping around the driver registers.
+void safeLine(int x1, int y1, int x2, int y2) {
+  x1 = constrain(x1, 0, 127);
+  x2 = constrain(x2, 0, 127);
+  y1 = constrain(y1, 0, 63);
+  y2 = constrain(y2, 0, 63);
+  u8g2.drawLine(x1, y1, x2, y2);
+}
+
+void safeCircle(int x, int y, int r) {
+  // If center is way off, don't even try
+  if (x < -10 || x > 138 || y < -10 || y > 74) return;
+  int cx = constrain(x, 0, 127);
+  int cy = constrain(y, 0, 63);
+  u8g2.drawCircle(cx, cy, r);
+}
+
+void safeDisc(int x, int y, int r) {
+  if (x < -10 || x > 138 || y < -10 || y > 74) return;
+  int cx = constrain(x, 0, 127);
+  int cy = constrain(y, 0, 63);
+  u8g2.drawDisc(cx, cy, r);
+}
+
+void safePixel(int x, int y) {
+  if (x >= 0 && x <= 127 && y >= 0 && y <= 63) u8g2.drawPixel(x, y);
+}
+
+void drawStickMan(Fighter &f) {
+  int x = (int)f.x;
+  int y = (int)f.y;
+  int d = f.facingRight ? 1 : -1;
+
+  safeCircle(x, y - 12, 2); // Head
+  safeLine(x, y - 10, x, y - 4); // Spine
+  
+  if (f.state == ATK_L) {
+    safeLine(x, y - 8, x + (8 * d), y - 8); 
+  } else if (f.state == ATK_H) {
+    safeLine(x, y - 8, x + (12 * d), y - 10); 
+    safePixel(x + (13 * d), y - 10);
+  } else if (f.state == ATK_S) {
+    safeLine(x, y - 8, x + (6 * d), y - 8); 
+  } else if (f.state == ATK_R) {
+    safeDisc(x, y - 7, 2); 
+  } else if (f.state == HITSTUN) {
+    safeLine(x - 3, y - 8, x + 3, y - 12); 
+  } else {
+    safeLine(x, y - 8, x - 3, y - 4);
+    safeLine(x, y - 8, x + 3, y - 4);
+  }
+  safeLine(x, y - 4, x - 3, y);
+  safeLine(x, y - 4, x + 3, y);
+}
+
+// --- COMBAT LOGIC ---
+void applyHit(Fighter &atk, Fighter &vic, int dmg, float power, float angleY) {
+  vic.damage += dmg;
+  // Knockback scales with damage %
+  float launch = power * (1.2f + (vic.damage / 50.0f));
+  vic.vx = atk.facingRight ? launch : -launch;
+  vic.vy = angleY;
+  vic.state = HITSTUN;
+  vic.timer = 18 + (vic.damage / 8);
+  shakeTimer = 4;
+  playSfx(100 + vic.damage * 5, 60);
+}
+
+void launchFireball(Fighter &f) {
+  if (fireball.active) return;
+  fireball.active = true;
+  fireball.x = f.x + (f.facingRight ? 10 : -10);
+  fireball.y = f.y - 8;
+  fireball.vx = f.facingRight ? 3.5f : -3.5f;
+  fireball.ownerIsPlayer = f.isPlayer;
+  playSfx(800, 40);
+}
+
+void updateProjectiles() {
+  if (!fireball.active) return;
+  fireball.x += fireball.vx;
+  if (fireball.x < -40 || fireball.x > 168) fireball.active = false;
+
+  Fighter &target = fireball.ownerIsPlayer ? ai : p;
+  Fighter &attacker = fireball.ownerIsPlayer ? p : ai;
+
+  if (abs(fireball.x - target.x) < 8 && abs(fireball.y - (target.y - 6)) < 10) {
+    applyHit(attacker, target, 7, 2.5f, -1.5f);
+    fireball.active = false;
+  }
+}
+
+void checkMelee(Fighter &f, Fighter &e, int range, int dmg, float pwr) {
+  float dist = abs(f.x - e.x);
+  bool correctDir = (f.facingRight && e.x > f.x) || (!f.facingRight && e.x < f.x);
+  if (dist < range && abs(f.y - e.y) < 14 && correctDir) {
+    applyHit(f, e, dmg, pwr, -pwr * 0.5f);
+  }
+}
+
+// --- PLAYER & AI LOGIC ---
+void updateFighter(Fighter &f, Fighter &e) {
+  if (f.state == DEAD) return;
+
+  f.vy += GRAVITY;
+  f.x += f.vx;
+  f.y += f.vy;
+  f.vx *= FRICTION;
+
+  // Platform Collision
+  if (f.y >= PLAT_Y && f.y <= PLAT_Y + 4 && f.vy >= 0) {
+    if (f.x >= PLAT_X1 && f.x <= PLAT_X2) {
+      f.y = PLAT_Y; f.vy = 0; f.canDoubleJump = true;
+    }
+  }
+
+  if (f.timer > 0) {
+    f.timer--;
+    if (f.timer == 0) f.state = IDLE;
+  }
+
+  // KO Logic
+  if (f.x < BLAST_L || f.x > BLAST_R || f.y > BLAST_D || f.y < BLAST_U) {
+    f.stocks--;
+    f.x = 64; f.y = 20; f.vx = 0; f.vy = 0; f.damage = 0;
+    playSfx(60, 500);
+    if (f.stocks <= 0) gState = KO_SCREEN;
+  }
+
+  if (f.isPlayer) {
+    if (f.state != HITSTUN && f.state != ATK_H && f.state != ATK_S && f.state != ATK_R) {
+      int mx = analogRead(STICK_X);
+      int my = analogRead(STICK_Y);
+      
+      if (mx < 350) { f.vx = -WALK_SPD; f.facingRight = false; f.state = RUN; }
+      else if (mx > 650) { f.vx = WALK_SPD; f.facingRight = true; f.state = RUN; }
+      else { f.state = IDLE; }
+
+      // UP to Jump
+      static bool upLatched = false;
+      if (my < 250) {
+        if (!upLatched) {
+          if (f.y == PLAT_Y) { f.vy = JUMP_FORCE; playSfx(400, 20); }
+          else if (f.canDoubleJump) { f.vy = JUMP_FORCE * 0.85f; f.canDoubleJump = false; playSfx(500, 20); }
+          upLatched = true;
+        }
+      } else { upLatched = false; }
+
+      if (digitalRead(BTN_LIGHT) == LOW && f.timer == 0) {
+        f.state = ATK_L; f.timer = 10; checkMelee(f, e, 12, 4, 2.8f);
+      }
+      if (digitalRead(BTN_HEAVY) == LOW && f.timer == 0) {
+        f.state = ATK_H; f.timer = 30; checkMelee(f, e, 16, 14, 5.5f);
+      }
+      if (digitalRead(BTN_SPEC) == LOW && f.timer == 0) {
+        f.state = ATK_S; f.timer = 25; launchFireball(f);
+      }
+      if (digitalRead(BTN_RECOV) == LOW && f.timer == 0) {
+        f.state = ATK_R; f.timer = 35; f.vy = -4.8f; playSfx(1000, 40);
+      }
+    }
+  } else {
+    // --- AGGRESSIVE AI BRAIN ---
+    if (f.state != HITSTUN) {
+      float dist = abs(f.x - e.x);
+      
+      // Stage Recovery Logic
+      if (f.x < PLAT_X1 - 5) f.vx += 0.22f;
+      else if (f.x > PLAT_X2 + 5) f.vx -= 0.22f;
+
+      if (f.y > PLAT_Y + 10) {
+        if (f.canDoubleJump) { f.vy = JUMP_FORCE; f.canDoubleJump = false; }
+        else if (f.timer == 0) { f.vy = -4.5f; f.state = ATK_R; f.timer = 30; }
+      }
+
+      // Offensive Logic
+      if (f.timer == 0) {
+        // Pursuit
+        if (dist > 15) {
+           f.vx = (e.x > f.x) ? WALK_SPD : -WALK_SPD;
+           f.state = RUN;
+        }
+        // Projectile Spacing
+        if (dist > 55 && !fireball.active && random(100) < 6) {
+          f.state = ATK_S; f.timer = 25; launchFireball(f);
+        }
+        // Jump if player is high
+        if (e.y < f.y - 20 && f.y == PLAT_Y && random(100) < 10) {
+          f.vy = JUMP_FORCE;
+        }
+      }
+
+      // Attack triggers
+      if (dist < 22 && f.timer == 0) {
+        int r = random(100);
+        if (r < 30) { f.state = ATK_L; f.timer = 12; checkMelee(f, e, 12, 5, 3.0f); }
+        else if (r < 35 && e.damage > 45) { f.state = ATK_H; f.timer = 35; checkMelee(f, e, 16, 15, 6.0f); }
+      }
+      f.facingRight = (e.x > f.x);
+    }
+  }
+}
+
+void setup() {
+  pinMode(BTN_LIGHT, INPUT_PULLUP);
+  pinMode(BTN_HEAVY, INPUT_PULLUP);
+  pinMode(BTN_SPEC, INPUT_PULLUP);
+  pinMode(BTN_RECOV, INPUT_PULLUP);
+  u8g2.begin();
+  randomSeed(analogRead(A2));
+  initFighter(p, true);
+  initFighter(ai, false);
+}
+
+void loop() {
+  u8g2.firstPage();
+  
+  int ox = 0, oy = 0;
+  if (shakeTimer > 0) {
+    ox = random(-2, 3);
+    oy = random(-2, 3);
+    shakeTimer--;
+  }
+
+  do {
+    if (gState == TITLE) {
+      u8g2.setFont(u8g2_font_7x14_tf);
+      u8g2.drawStr(25, 30, "STICK SMASH");
+      u8g2.setFont(u8g2_font_5x7_tf);
+      u8g2.drawStr(30, 50, "PRESS LIGHT TO START");
+      if (digitalRead(BTN_LIGHT) == LOW) { gState = MATCH; playSfx(600, 100); }
+    } 
+    else if (gState == MATCH) {
+      updateFighter(p, ai);
+      updateFighter(ai, p);
+      updateProjectiles();
+
+      // Platform with shake
+      u8g2.drawHLine(PLAT_X1 + ox, PLAT_Y + oy, PLAT_X2 - PLAT_X1);
+      u8g2.drawLine(PLAT_X1 + ox, PLAT_Y + oy, PLAT_X1 - 3 + ox, PLAT_Y + 3 + oy);
+      u8g2.drawLine(PLAT_X2 + ox, PLAT_Y + oy, PLAT_X2 + 3 + ox, PLAT_Y + 3 + oy);
+
+      drawStickMan(p);
+      drawStickMan(ai);
+
+      if (fireball.active) {
+        safeDisc((int)fireball.x, (int)fireball.y, 2);
+        safePixel((int)fireball.x - fireball.vx, (int)fireball.y);
+      }
+
+      u8g2.setFont(u8g2_font_4x6_tf);
+      u8g2.setCursor(5, 62); u8g2.print("P:"); u8g2.print(p.damage); u8g2.print("% ["); u8g2.print(p.stocks); u8g2.print("]");
+      u8g2.setCursor(75, 62); u8g2.print("AI:"); u8g2.print(ai.damage); u8g2.print("% ["); u8g2.print(ai.stocks); u8g2.print("]");
+    }
+    else if (gState == KO_SCREEN) {
+      u8g2.setFont(u8g2_font_7x14_tf);
+      u8g2.drawStr(20, 30, p.stocks > 0 ? "VICTORY!" : "DEFEAT...");
+      u8g2.setFont(u8g2_font_5x7_tf);
+      u8g2.drawStr(30, 50, "REMATCH? (LIGHT)");
+      if (digitalRead(BTN_LIGHT) == LOW) {
+        initFighter(p, true);
+        initFighter(ai, false);
+        gState = MATCH;
+      }
+    }
+  } while (u8g2.nextPage());
+  delay(15);
+}

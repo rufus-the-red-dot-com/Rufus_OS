@@ -1,0 +1,333 @@
+#include <Arduino.h>
+#include <U8g2lib.h>
+#include <Wire.h>
+
+// SH1106 128x64 I2C
+U8G2_SH1106_128X64_NONAME_1_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+
+// --- PIN DEFINITIONS ---
+#define STICK_X    A0
+#define BTN_START  2  
+#define BTN_SHOOT  9   // D9 to fire bubble
+#define BZ_SFX     3  
+
+// --- GAME CONSTANTS ---
+#define GRID_W     8
+#define GRID_H     8
+#define BUBBLE_RAD 4
+#define OFFSET_X   32  // Center the grid on the 128px screen
+#define OFFSET_Y   4
+
+// --- DATA STRUCTURES ---
+struct Projectile {
+  float x, y;
+  float vx, vy;
+  uint8_t type; // 1-4
+  bool active;
+};
+
+enum State { TITLE, PLAYING, LEVEL_CLEAR, WIN, GAMEOVER };
+State gameState = TITLE;
+
+uint8_t grid[GRID_H][GRID_W];
+Projectile currentP;
+float aimAngle = 0; // In radians
+uint8_t loadedType = 1;
+uint8_t nextType = 2;
+int score = 0;
+int sector = 1;
+unsigned long stateTimer = 0;
+
+// --- AUDIO ---
+void playSound(int type) {
+  if (type == 0) tone(BZ_SFX, 1000, 30); // Shoot
+  if (type == 1) tone(BZ_SFX, 1500, 50); // Match/Pop
+  if (type == 2) tone(BZ_SFX, 200, 100); // Wall bounce
+  if (type == 3) tone(BZ_SFX, 600, 80);  // Bubbles falling
+  if (type == 4) tone(BZ_SFX, 1200, 150); // Sector Clear
+}
+
+// --- LOGIC ---
+void resetGrid() {
+  // Clear grid
+  for(int i=0; i<GRID_H; i++) for(int j=0; j<GRID_W; j++) grid[i][j] = 0;
+  
+  // Procedural layout based on sector
+  int rows = min(sector + 2, 6); // Max 6 rows
+  for (int y = 0; y < rows; y++) {
+    for (int x = 0; x < GRID_W; x++) {
+      // Create some gaps for randomized layout
+      if (random(0, 10) < 8) { 
+        grid[y][x] = random(1, 5);
+      }
+    }
+  }
+  
+  // Ensure at least one bubble is in the top row to prevent instant win
+  if (grid[0][random(0, GRID_W)] == 0) grid[0][random(0, GRID_W)] = random(1, 5);
+  
+  loadedType = random(1, 5);
+  nextType = random(1, 5);
+}
+
+void initGame() {
+  score = 0;
+  sector = 1;
+  resetGrid();
+  currentP.active = false;
+  aimAngle = 0; 
+  gameState = PLAYING;
+}
+
+bool checkBoardEmpty() {
+  for (int y = 0; y < GRID_H; y++) {
+    for (int x = 0; x < GRID_W; x++) {
+      if (grid[y][x] != 0) return false;
+    }
+  }
+  return true;
+}
+
+// Check for matches (simplified flood fill)
+int countMatches(int x, int y, uint8_t type, bool visited[GRID_H][GRID_W]) {
+  if (x < 0 || x >= GRID_W || y < 0 || y >= GRID_H) return 0;
+  if (visited[y][x] || grid[y][x] != type) return 0;
+  
+  visited[y][x] = true;
+  int count = 1;
+  count += countMatches(x + 1, y, type, visited);
+  count += countMatches(x - 1, y, type, visited);
+  count += countMatches(x, y + 1, type, visited);
+  count += countMatches(x, y - 1, type, visited);
+  return count;
+}
+
+void removeMatches(int x, int y, uint8_t type) {
+  if (x < 0 || x >= GRID_W || y < 0 || y >= GRID_H) return;
+  if (grid[y][x] != type) return;
+  
+  grid[y][x] = 0;
+  removeMatches(x + 1, y, type);
+  removeMatches(x - 1, y, type);
+  removeMatches(x, y + 1, type);
+  removeMatches(x, y - 1, type);
+}
+
+// Support check logic
+void findConnected(int x, int y, bool connected[GRID_H][GRID_W]) {
+  if (x < 0 || x >= GRID_W || y < 0 || y >= GRID_H) return;
+  if (connected[y][x] || grid[y][x] == 0) return;
+  
+  connected[y][x] = true;
+  findConnected(x + 1, y, connected);
+  findConnected(x - 1, y, connected);
+  findConnected(x, y + 1, connected);
+  findConnected(x, y - 1, connected);
+}
+
+void dropUnsupported() {
+  bool connected[GRID_H][GRID_W];
+  for(int i=0; i<GRID_H; i++) for(int j=0; j<GRID_W; j++) connected[i][j] = false;
+  
+  for (int x = 0; x < GRID_W; x++) {
+    if (grid[0][x] != 0) findConnected(x, 0, connected);
+  }
+  
+  bool dropped = false;
+  for (int y = 0; y < GRID_H; y++) {
+    for (int x = 0; x < GRID_W; x++) {
+      if (grid[y][x] != 0 && !connected[y][x]) {
+        grid[y][x] = 0;
+        score += 75; 
+        dropped = true;
+      }
+    }
+  }
+  if (dropped) playSound(3);
+}
+
+void stickProjectile() {
+  int gx = (int)(currentP.x - OFFSET_X) / (BUBBLE_RAD * 2);
+  int gy = (int)(currentP.y - OFFSET_Y) / (BUBBLE_RAD * 2);
+  
+  gx = constrain(gx, 0, GRID_W - 1);
+  gy = constrain(gy, 0, GRID_H - 1);
+
+  if (grid[gy][gx] != 0) {
+      if (gy < GRID_H - 1 && grid[gy+1][gx] == 0) gy++;
+      else if (gx < GRID_W - 1 && grid[gy][gx+1] == 0) gx++;
+      else if (gx > 0 && grid[gy][gx-1] == 0) gx--;
+  }
+  
+  grid[gy][gx] = currentP.type;
+  currentP.active = false;
+  
+  bool visited[GRID_H][GRID_W];
+  for(int i=0; i<GRID_H; i++) for(int j=0; j<GRID_W; j++) visited[i][j] = false;
+
+  if (countMatches(gx, gy, currentP.type, visited) >= 3) {
+    removeMatches(gx, gy, currentP.type);
+    score += 50;
+    playSound(1);
+    dropUnsupported();
+  }
+  
+  loadedType = nextType;
+  nextType = random(1, 5);
+  
+  // Logic checks
+  if (checkBoardEmpty()) {
+    gameState = LEVEL_CLEAR;
+    stateTimer = millis();
+    playSound(4);
+  } else if (gy >= GRID_H - 1) {
+    gameState = GAMEOVER;
+  }
+}
+
+void update() {
+  if (gameState != PLAYING) return;
+
+  int valX = analogRead(STICK_X);
+  int deltaX = valX - 512; 
+  if (abs(deltaX) > 100) {
+    float rotateSpeed = 0.045; 
+    aimAngle += (deltaX / 512.0) * rotateSpeed;
+    float angleLimit = 75.0 * (PI / 180.0);
+    aimAngle = constrain(aimAngle, -angleLimit, angleLimit);
+  }
+
+  static bool shootPrev = false;
+  if (digitalRead(BTN_SHOOT) == LOW && !shootPrev && !currentP.active) {
+    currentP.active = true;
+    currentP.x = 64;
+    currentP.y = 56;
+    currentP.vx = sin(aimAngle) * 4.0;
+    currentP.vy = -cos(aimAngle) * 4.0;
+    currentP.type = loadedType;
+    playSound(0);
+    shootPrev = true;
+  } else if (digitalRead(BTN_SHOOT) == HIGH) shootPrev = false;
+
+  if (currentP.active) {
+    currentP.x += currentP.vx;
+    currentP.y += currentP.vy;
+
+    if (currentP.x < OFFSET_X + BUBBLE_RAD || currentP.x > OFFSET_X + (GRID_W * BUBBLE_RAD * 2) - BUBBLE_RAD) {
+      currentP.vx *= -1;
+      playSound(2);
+    }
+
+    if (currentP.y < OFFSET_Y + BUBBLE_RAD) {
+      stickProjectile();
+    } 
+    else {
+      for (int y = 0; y < GRID_H; y++) {
+        for (int x = 0; x < GRID_W; x++) {
+          if (grid[y][x] != 0) {
+            float targetX = OFFSET_X + x * BUBBLE_RAD * 2 + BUBBLE_RAD;
+            float targetY = OFFSET_Y + y * BUBBLE_RAD * 2 + BUBBLE_RAD;
+            float dist = sqrt(sq(currentP.x - targetX) + sq(currentP.y - targetY));
+            if (dist < BUBBLE_RAD * 1.85) {
+              stickProjectile();
+              return;
+            }
+          }
+        }
+      }
+    }
+    if (currentP.y > 64) currentP.active = false;
+  }
+}
+
+void drawBubble(int x, int y, uint8_t type) {
+  if (type == 0) return;
+  u8g2.drawCircle(x, y, BUBBLE_RAD - 1);
+  if (type == 1) u8g2.drawDisc(x, y, 1);
+  else if (type == 2) u8g2.drawFrame(x-1, y-1, 3, 3);
+  else if (type == 3) { u8g2.drawLine(x-1, y-1, x+1, y+1); u8g2.drawLine(x+1, y-1, x-1, y+1); }
+  else if (type == 4) u8g2.drawVLine(x, y-1, 3);
+}
+
+void render() {
+  u8g2.firstPage();
+  do {
+    if (gameState == TITLE) {
+      u8g2.setFont(u8g2_font_logisoso16_tr); u8g2.drawStr(12, 32, "PUZZLE");
+      u8g2.drawStr(25, 52, "BOBBLE");
+      u8g2.setFont(u8g2_font_4x6_tf); if ((millis()/500)%2) u8g2.drawStr(38, 62, "JACK IN [D2]");
+    } 
+    else {
+      u8g2.setDrawColor(1);
+      u8g2.drawVLine(OFFSET_X - 1, 0, 64);
+      u8g2.drawVLine(OFFSET_X + (GRID_W * BUBBLE_RAD * 2), 0, 64);
+
+      for (int y = 0; y < GRID_H; y++) {
+        for (int x = 0; x < GRID_W; x++) {
+          if (grid[y][x] != 0) {
+            drawBubble(OFFSET_X + x * BUBBLE_RAD * 2 + BUBBLE_RAD, 
+                       OFFSET_Y + y * BUBBLE_RAD * 2 + BUBBLE_RAD, 
+                       grid[y][x]);
+          }
+        }
+      }
+
+      // Launcher & Aim Guide - OFFSET POINTER
+      int x1 = 64 + sin(aimAngle) * (BUBBLE_RAD + 2);
+      int y1 = 58 - cos(aimAngle) * (BUBBLE_RAD + 2);
+      int x2 = 64 + sin(aimAngle) * 22;
+      int y2 = 58 - cos(aimAngle) * 22;
+      u8g2.drawLine(x1, y1, x2, y2);
+      
+      // Only draw loaded bubble in gun if not currently fired
+      if (!currentP.active) {
+        drawBubble(64, 58, loadedType);
+      }
+
+      if (currentP.active) drawBubble(currentP.x, currentP.y, currentP.type);
+
+      // SIDE PANELS
+      u8g2.setFont(u8g2_font_4x6_tf);
+      u8g2.drawStr(100, 10, "NEXT:");
+      drawBubble(110, 20, nextType);
+      
+      u8g2.drawStr(100, 35, "LOAD:");
+      drawBubble(110, 45, loadedType);
+      
+      u8g2.drawStr(0, 10, "SCR:"); u8g2.setCursor(0, 18); u8g2.print(score);
+      u8g2.drawStr(0, 32, "SECT:"); u8g2.setCursor(0, 40); u8g2.print(sector);
+
+      if (gameState == LEVEL_CLEAR) {
+        u8g2.setDrawColor(0); u8g2.drawBox(20, 20, 88, 24); u8g2.setDrawColor(1);
+        u8g2.drawFrame(20, 20, 88, 24);
+        u8g2.drawStr(30, 30, "SECTOR CLEAR!");
+        u8g2.drawStr(25, 40, "PREPARING NEXT...");
+      } else if (gameState == GAMEOVER) {
+        u8g2.setDrawColor(0); u8g2.drawBox(30, 25, 68, 15); u8g2.setDrawColor(1);
+        u8g2.drawFrame(30, 25, 68, 15); u8g2.drawStr(42, 35, "GAME OVER");
+      }
+    }
+  } while (u8g2.nextPage());
+}
+
+void setup() {
+  pinMode(BTN_START, INPUT_PULLUP);
+  pinMode(BTN_SHOOT, INPUT_PULLUP);
+  u8g2.begin();
+  randomSeed(analogRead(A2));
+}
+
+void loop() {
+  if ((gameState == TITLE || gameState == GAMEOVER) && digitalRead(BTN_START) == LOW) initGame();
+  
+  if (gameState == PLAYING) {
+    update();
+  } else if (gameState == LEVEL_CLEAR) {
+    if (millis() - stateTimer > 2500) {
+      sector++;
+      resetGrid();
+      gameState = PLAYING;
+    }
+  }
+  render();
+}

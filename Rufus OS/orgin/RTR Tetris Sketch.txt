@@ -1,0 +1,218 @@
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SH110X.h> 
+
+#define WIDTH 64
+#define HEIGHT 128
+Adafruit_SH1106G display = Adafruit_SH1106G(128, 64, &Wire, -1);
+
+// Piece Data
+const char pieces_S_l[2][2][4] = {{{0, 0, 1, 1}, {0, 1, 1, 2}}, {{0, 1, 1, 2}, {1, 1, 0, 0}}};
+const char pieces_S_r[2][2][4] = {{{1, 1, 0, 0}, {0, 1, 1, 2}}, {{0, 1, 1, 2}, {0, 0, 1, 1}}};
+const char pieces_L_l[4][2][4] = {{{0, 0, 0, 1}, {0, 1, 2, 2}}, {{0, 1, 2, 2}, {1, 1, 1, 0}}, {{0, 1, 1, 1}, {0, 0, 1, 2}}, {{0, 0, 1, 2}, {1, 0, 0, 0}}};
+const char pieces_Sq[1][2][4] = {{{0, 1, 0, 1}, {0, 0, 1, 1}}};
+const char pieces_T[4][2][4] = {{{0, 0, 1, 0},{0, 1, 1, 2}}, {{0, 1, 1, 2},{1, 0, 1, 1}}, {{1, 0, 1, 1},{0, 1, 1, 2}}, {{0, 1, 1, 2},{0, 0, 1, 0}}};
+const char pieces_l[2][2][4] = {{{0, 1, 2, 3}, {0, 0, 0, 0}}, {{0, 0, 0, 0}, {0, 1, 2, 3}}};
+
+const short MARGIN_TOP = 19; 
+const short MARGIN_LEFT = 3; 
+
+word currentType, nextType, rotation; 
+short pieceX, pieceY; 
+short piece[2][4]; 
+int score = 0; 
+long timer; 
+boolean grid[10][18]; 
+
+// --- PIN ASSIGNMENTS ---
+#define PIN_SPEED 5    // MOVED TO PIN 5 (Far away from others)
+#define PIN_LEFT 9
+#define PIN_ROTATE 10
+#define PIN_RIGHT 11
+
+void setup() {
+  Wire.begin();
+  pinMode(PIN_LEFT, INPUT_PULLUP);
+  pinMode(PIN_ROTATE, INPUT_PULLUP);
+  pinMode(PIN_RIGHT, INPUT_PULLUP);
+  pinMode(PIN_SPEED, INPUT_PULLUP); // Pin 5 Pullup
+  
+  display.begin(0x3C, true); 
+  display.setRotation(1); 
+  
+  showTitleScreen();
+  
+  randomSeed(analogRead(0));
+  nextType = random(6);
+  generate();
+  timer = millis();
+}
+
+void showTitleScreen() {
+  while(true) {
+    display.clearDisplay();
+    display.setTextColor(SH110X_WHITE);
+
+    // Header: TETRIS (Centered Size 1 Bold)
+    display.setTextSize(1);
+    display.setCursor(14, 15); display.print("TETRIS");
+    display.setCursor(15, 15); display.print("TETRIS"); 
+
+    // T-Block Graphic
+    display.fillRect(23, 35, 18, 6, SH110X_WHITE); 
+    display.fillRect(29, 41, 6, 6, SH110X_WHITE);  
+
+    display.setCursor(0, 60);
+    display.print("presented by:");
+    display.setCursor(0, 75);
+    display.print("www.rufusthered.com");
+
+    display.setCursor(0, 105);
+    display.print("PUSH L+R START");
+    display.display();
+
+    if (digitalRead(PIN_LEFT) == LOW && digitalRead(PIN_RIGHT) == LOW) {
+      delay(250); // Small wait for physical button release
+      break; 
+    }
+  }
+}
+
+void loop() {
+  // Check Pin 5 for Speed
+  int currentInterval = (digitalRead(PIN_SPEED) == LOW) ? 30 : 400;
+
+  if (millis() - timer > currentInterval) {
+    if (nextCollision()) {
+      for(short i = 0; i < 4; i++) grid[pieceX + piece[0][i]][pieceY + piece[1][i]] = 1;
+      checkLines();
+      generate();
+      if (nextCollision()) gameOver();
+    } else {
+      pieceY++;
+    }
+    refresh(); 
+    timer = millis();
+  }
+
+  // Movements
+  if (digitalRead(PIN_LEFT) == LOW) {
+    if (!nextHorizontalCollision(piece, -1)) { pieceX--; refresh(); }
+    delay(120); 
+  }
+  
+  if (digitalRead(PIN_RIGHT) == LOW) {
+    if (!nextHorizontalCollision(piece, 1)) { pieceX++; refresh(); }
+    delay(120);
+  }
+
+  if (digitalRead(PIN_ROTATE) == LOW) {
+    doRotate();
+    refresh();
+    delay(200); 
+  }
+}
+
+// ... Piece handling functions (doRotate, checkLines, gameOver, etc.) remain identical ...
+
+void drawSkull(int x, int y) {
+  display.fillRoundRect(x+4, y, 12, 10, 3, SH110X_WHITE);
+  display.fillRect(x+6, y+8, 8, 4, SH110X_WHITE);
+  display.fillCircle(x+7, y+4, 1, SH110X_BLACK);
+  display.fillCircle(x+13, y+4, 1, SH110X_BLACK);
+  display.drawLine(x, y, x+20, y+15, SH110X_WHITE);
+  display.drawLine(x+20, y, x, y+15, SH110X_WHITE);
+}
+
+void gameOver(){
+  display.clearDisplay();
+  drawSkull(22, 20); 
+  display.setTextSize(1);
+  display.setCursor(5, 50);
+  display.print("GAME OVER");
+  display.setCursor(5, 70);
+  display.print("Score: "); display.print(score);
+  display.setCursor(0, 105);
+  display.print("PUSH L+R RESET");
+  display.display();
+
+  while(true) {
+    if (digitalRead(PIN_LEFT) == LOW && digitalRead(PIN_RIGHT) == LOW) {
+      delay(500);
+      for(int i=0; i<10; i++) for(int j=0; j<18; j++) grid[i][j] = 0;
+      score = 0;
+      showTitleScreen();
+      return; 
+    }
+  }
+}
+
+void doRotate() {
+    int oldRot = rotation; int oldX = pieceX;
+    rotation = (rotation + 1) % 4;
+    copyPiece(piece, currentType, rotation);
+    if (checkCollision()) { pieceX--; if (checkCollision()) { pieceX += 2; if (checkCollision()) { pieceX = oldX; rotation = oldRot; copyPiece(piece, currentType, rotation); } } }
+}
+
+void copyPiece(short p[2][4], short type, short rot){
+  switch(type){
+    case 0: for(short i=0; i<4; i++){ p[0][i]=pieces_L_l[rot%4][0][i]; p[1][i]=pieces_L_l[rot%4][1][i]; } break;
+    case 1: for(short i=0; i<4; i++){ p[0][i]=pieces_S_l[rot%2][0][i]; p[1][i]=pieces_S_l[rot%2][1][i]; } break;
+    case 2: for(short i=0; i<4; i++){ p[0][i]=pieces_S_r[rot%2][0][i]; p[1][i]=pieces_S_r[rot%2][1][i]; } break;
+    case 3: for(short i=0; i<4; i++){ p[0][i]=pieces_Sq[0][0][i]; p[1][i]=pieces_Sq[0][1][i]; } break;
+    case 4: for(short i=0; i<4; i++){ p[0][i]=pieces_T[rot%4][0][i]; p[1][i]=pieces_T[rot%4][1][i]; } break;
+    case 5: for(short i=0; i<4; i++){ p[0][i]=pieces_l[rot%2][0][i]; p[1][i]=pieces_l[rot%2][1][i]; } break;
+  }
+}
+
+void generate(){ currentType = nextType; nextType = random(6); pieceY = 0; pieceX = 4; rotation = 0; copyPiece(piece, currentType, rotation); }
+
+void checkLines(){
+  for(short y = 17; y >= 0; y--){
+    boolean full = true;
+    for(short x = 0; x < 10; x++) full = full && grid[x][y];
+    if(full){
+      for(short ty = y; ty > 0; ty--) for(short tx = 0; tx < 10; tx++) grid[tx][ty] = grid[tx][ty-1];
+      for(short tx = 0; tx < 10; tx++) grid[tx][0] = 0;
+      score += 10; y++; 
+    }
+  }
+}
+
+void refresh(){
+  display.clearDisplay();
+  display.drawRect(0, 18, 64, 110, SH110X_WHITE);
+  display.setCursor(2, 2); display.print("S:"); display.print(score);
+  for(short x = 0; x < 10; x++)
+    for(short y = 0; y < 18; y++)
+      if(grid[x][y]) display.fillRect(MARGIN_LEFT + 6*x, MARGIN_TOP + 6*y, 5, 5, SH110X_WHITE);
+  for(short i = 0; i < 4; i++)
+    display.fillRect(MARGIN_LEFT + 6*(pieceX + piece[0][i]), MARGIN_TOP + 6*(pieceY + piece[1][i]), 5, 5, SH110X_WHITE);
+  display.display();
+}
+
+boolean nextCollision(){
+  for(short i = 0; i < 4; i++){
+    short y = pieceY + piece[1][i] + 1;
+    short x = pieceX + piece[0][i];
+    if(y > 17 || grid[x][y]) return true;
+  }
+  return false;
+}
+
+boolean checkCollision(){
+  for(short i = 0; i < 4; i++){
+    short y = pieceY + piece[1][i];
+    short x = pieceX + piece[0][i];
+    if(y > 17 || y < 0 || x < 0 || x > 9 || grid[x][y]) return true;
+  }
+  return false;
+}
+
+boolean nextHorizontalCollision(short p[2][4], int amt){
+  for(short i = 0; i < 4; i++){
+    short newX = pieceX + p[0][i] + amt;
+    if(newX > 9 || newX < 0 || grid[newX][pieceY + p[1][i]]) return true;
+  }
+  return false;
+}

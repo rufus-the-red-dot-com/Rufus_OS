@@ -1,0 +1,335 @@
+#include <Arduino.h>
+#include <U8g2lib.h>
+#include <Wire.h>
+#include <avr/pgmspace.h>
+
+// SH1106 128x64 I2C
+U8G2_SH1106_128X64_NONAME_1_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+
+// --- PIN DEFINITIONS ---
+#define STICK_X    A0
+#define STICK_Y    A1
+#define BTN_ACTION 11 // Confirm Choice / Advance
+#define BTN_INVERT 9  // Toggle Light/Dark Mode
+#define BTN_STATS  10 // Open Cyberdeck (Stats)
+#define BZ_SFX      3  
+#define BZ_SFX_2    6  
+
+// --- GAME CONSTANTS ---
+#define MAX_TEXT_LEN 128
+#define CHOICE_COUNT 3
+
+// --- ENUMS ---
+enum GameState { NARRATIVE, HACKING_MINIGAME, MILESTONE, CYBERDECK, TITLE, GAMEOVER };
+
+struct Choice {
+  const char* label;
+  int nextScene;
+  int nuyenChange;
+  int repChange;
+};
+
+struct Scene {
+  const char* speaker;
+  const char* text;
+  Choice choices[CHOICE_COUNT];
+};
+
+// --- NARRATIVE DATA (The Story) ---
+// Using PROGMEM for the actual string literals to save SRAM
+const char s0[] PROGMEM = "Waking up... Neural link unstable. Static fills your vision.";
+const char s1[] PROGMEM = "A cramped motel in the Stacks. Your deck is overheating.";
+const char s2[] PROGMEM = "NEW MSG: 'Splicer, I got a lead on a Militech transport.' -DEX";
+const char s3[] PROGMEM = "The neon smog is thick. Below, a Maelstrom gang is looting.";
+const char s4[] PROGMEM = "DEX: 'Transport carries a Prototype CORE. Pay is 5000 nuyen.'";
+const char s5[] PROGMEM = "You walk out. But a Militech hit-squad is blocking the exit.";
+const char s6[] PROGMEM = "You're at the transport. The ICE is glowing blue. BREACH?";
+const char s7[] PROGMEM = "You slip past the drones. The CORE is right there.";
+const char s8[] PROGMEM = "Job Complete. You're rich, but Arasaka knows your name.";
+const char s9[] PROGMEM = "Militech's transport explodes. The Streets hail you as a hero.";
+const char s10[] PROGMEM = "Gunfire erupts. You barely escape with your life.";
+const char s11[] PROGMEM = "BREACH COMMENCING... Siphoning corporate credits.";
+const char s12[] PROGMEM = "T-Bug: 'You're sloppy, Splicer. I cleared your trail... for a fee.'";
+const char s13[] PROGMEM = "T-Bug leaked your location. The ICE has frozen your brain.";
+const char s14[] PROGMEM = "Militech black-site. You're just another ghost in the data.";
+
+const char sp0[] PROGMEM = "SYSTEM";
+const char sp1[] PROGMEM = "YOU";
+const char sp2[] PROGMEM = "DECK";
+const char sp3[] PROGMEM = "CITY";
+const char sp4[] PROGMEM = "DEX";
+const char sp5[] PROGMEM = "MISSION";
+const char sp6[] PROGMEM = "HACK";
+const char sp7[] PROGMEM = "T-BUG";
+
+const char cl0[] PROGMEM = "Recalibrate";
+const char cl1[] PROGMEM = "Force Boot";
+const char cl2[] PROGMEM = "Check Comms";
+const char cl3[] PROGMEM = "Look Out";
+const char cl4[] PROGMEM = "Call Dex";
+const char cl5[] PROGMEM = "Delete Msg";
+const char cl6[] PROGMEM = "Hack Gang";
+const char cl7[] PROGMEM = "Back to Deck";
+const char cl8[] PROGMEM = "Accept Job";
+const char cl9[] PROGMEM = "Double Fee";
+const char cl10[] PROGMEM = "Pass";
+const char cl11[] PROGMEM = "Fight";
+const char cl12[] PROGMEM = "Surrender";
+const char cl13[] PROGMEM = "Bribe";
+const char cl14[] PROGMEM = "BREACH!";
+const char cl15[] PROGMEM = "Stealth";
+const char cl16[] PROGMEM = "Grab CORE";
+const char cl17[] PROGMEM = "Plant Bomb";
+const char cl18[] PROGMEM = "Restart";
+const char cl19[] PROGMEM = "Hide";
+const char cl20[] PROGMEM = "Call Help";
+const char cl21[] PROGMEM = "Execute";
+const char cl22[] PROGMEM = "Pay Her";
+const char cl23[] PROGMEM = "Refuse";
+const char cl24[] PROGMEM = "REBOOT";
+const char clEmpty[] PROGMEM = "";
+
+const Scene story[] PROGMEM = {
+  { sp0, s0, {{cl0, 1, 0, 0}, {cl1, 1, 0, -2}, {clEmpty, -1, 0, 0}} },
+  { sp1, s1, {{cl2, 2, 0, 0}, {cl3, 3, 0, 0}, {clEmpty, -1, 0, 0}} },
+  { sp2, s2, {{cl4, 4, 0, 5}, {cl5, 5, 0, -5}, {clEmpty, -1, 0, 0}} },
+  { sp3, s3, {{cl6, 11, 200, 10}, {cl7, 2, 0, 0}, {clEmpty, -1, 0, 0}} },
+  { sp4, s4, {{cl8, 6, 0, 15}, {cl9, 6, 0, -10}, {cl10, 5, 0, 0}} },
+  { sp1, s5, {{cl11, 10, 0, 20}, {cl12, 14, -100, -30}, {cl13, 10, -50, 0}} },
+  { sp5, s6, {{cl14, 11, 0, 0}, {cl15, 7, 0, 5}, {clEmpty, -1, 0, 0}} },
+  { sp1, s7, {{cl16, 8, 5000, 50}, {cl17, 9, 0, 30}, {clEmpty, -1, 0, 0}} },
+  { sp0, s8, {{cl18, 0, 0, 0}, {clEmpty, -1, 0, 0}, {clEmpty, -1, 0, 0}} },
+  { sp0, s9, {{cl18, 0, 0, 0}, {clEmpty, -1, 0, 0}, {clEmpty, -1, 0, 0}} },
+  { sp1, s10, {{cl19, 1, 0, 0}, {cl20, 12, -100, 0}, {clEmpty, -1, 0, 0}} },
+  { sp6, s11, {{cl21, 8, 2000, 40}, {clEmpty, -1, 0, 0}, {clEmpty, -1, 0, 0}} },
+  { sp7, s12, {{cl22, 1, -200, 10}, {cl23, 13, 0, -50}, {clEmpty, -1, 0, 0}} },
+  { sp0, s13, {{cl24, 0, 0, 0}, {clEmpty, -1, 0, 0}, {clEmpty, -1, 0, 0}} },
+  { sp0, s14, {{cl24, 0, 0, 0}, {clEmpty, -1, 0, 0}, {clEmpty, -1, 0, 0}} }
+};
+
+// --- GLOBAL STATE ---
+GameState state = TITLE;
+int currentScene = 0;
+int selectedChoice = 0;
+int typewriterIndex = 0;
+unsigned long lastType = 0;
+
+// RPG Stats
+long totalNuyen = 100;
+int reputation = 0;
+bool isInverted = false;
+unsigned long stateTimer = 0;
+
+// Buffer for string reading from PROGMEM
+char globalBuffer[MAX_TEXT_LEN];
+
+// --- AUDIO ---
+void playBeep() { tone(BZ_SFX, 1000, 20); }
+void playConfirm() { tone(BZ_SFX, 1500, 50); delay(50); tone(BZ_SFX, 2000, 50); }
+
+void playAggressiveSynth() {
+  for(int i=0; i<4; i++) {
+    tone(BZ_SFX, 100 + (i*20), 100);
+    tone(BZ_SFX_2, 150 - (i*10), 50);
+    delay(150);
+  }
+  noTone(BZ_SFX); noTone(BZ_SFX_2);
+}
+
+// --- LOGIC ---
+
+void changeScene(int next) {
+  if (next == -1) return;
+  
+  // Apply changes from current choice
+  // Must read values from PROGMEM
+  long nChange = pgm_read_word(&(story[currentScene].choices[selectedChoice].nuyenChange));
+  int rChange = pgm_read_word(&(story[currentScene].choices[selectedChoice].repChange));
+  
+  totalNuyen += nChange;
+  reputation += rChange;
+  
+  currentScene = next;
+  selectedChoice = 0;
+  typewriterIndex = 0;
+  playConfirm();
+
+  // Read current scene text into buffer to check for "BREACH"
+  const char* textPtr = (const char*)pgm_read_ptr(&(story[currentScene].text));
+  strcpy_P(globalBuffer, textPtr);
+
+  if (strstr(globalBuffer, "BREACH")) {
+    state = HACKING_MINIGAME;
+    stateTimer = millis();
+  }
+}
+
+// --- DRAWING ---
+
+void drawHUD() {
+  u8g2.setFont(u8g2_font_4x6_tf);
+  u8g2.setCursor(2, 6); u8g2.print(F("REP: ")); u8g2.print(reputation);
+  u8g2.setCursor(80, 6); u8g2.print(F("NUYEN: ")); u8g2.print(totalNuyen);
+  u8g2.drawHLine(0, 8, 128);
+}
+
+void drawVisualNovel() {
+  u8g2.firstPage();
+  do {
+    u8g2.setDrawColor(1);
+    if(isInverted) u8g2.drawBox(0,0,128,64);
+    u8g2.setDrawColor(isInverted ? 0 : 1);
+
+    if (state == TITLE) {
+      u8g2.setFont(u8g2_font_7x14_tf);
+      u8g2.drawStr(25, 30, "GRID SPLICER");
+      u8g2.setFont(u8g2_font_5x7_tf);
+      u8g2.drawStr(30, 45, "CHRONICLES");
+      if ((millis() / 500) % 2 == 0) u8g2.drawStr(22, 60, "PRESS ACTION [11]");
+    }
+    else if (state == CYBERDECK) {
+      u8g2.drawFrame(0, 0, 128, 64);
+      u8g2.drawBox(0,0, 128, 10);
+      u8g2.setDrawColor(isInverted ? 1 : 0);
+      u8g2.setFont(u8g2_font_5x7_tf);
+      u8g2.drawStr(5, 8, "RUNNER OS // STATS");
+      u8g2.setDrawColor(isInverted ? 0 : 1);
+      u8g2.setCursor(10, 25); u8g2.print(F("REP: ")); u8g2.print(reputation);
+      u8g2.setCursor(10, 35); u8g2.print(F("NUYEN: ")); u8g2.print(totalNuyen);
+      u8g2.setCursor(10, 45); u8g2.print(F("ZONE: NIGHT CITY"));
+    }
+    else if (state == HACKING_MINIGAME) {
+      u8g2.setFont(u8g2_font_6x12_tf);
+      u8g2.drawStr(25, 25, "HACKING...");
+      u8g2.drawFrame(20, 35, 88, 10);
+      int progress = map((millis() - stateTimer) % 2000, 0, 2000, 0, 86);
+      u8g2.drawBox(21, 36, progress, 8);
+      u8g2.setFont(u8g2_font_4x6_tf);
+      u8g2.drawStr(30, 55, "BYPASSING ICE...");
+    }
+    else {
+      drawHUD();
+      
+      // Speaker Label
+      const char* speakerPtr = (const char*)pgm_read_ptr(&(story[currentScene].speaker));
+      strcpy_P(globalBuffer, speakerPtr);
+      u8g2.setFont(u8g2_font_5x7_tf);
+      u8g2.drawBox(0, 10, 45, 9);
+      u8g2.setDrawColor(isInverted ? 1 : 0);
+      u8g2.drawStr(2, 17, globalBuffer);
+      u8g2.setDrawColor(isInverted ? 0 : 1);
+      
+      // Dialog Text
+      const char* textPtr = (const char*)pgm_read_ptr(&(story[currentScene].text));
+      strcpy_P(globalBuffer, textPtr);
+      int len = strlen(globalBuffer);
+      
+      if (millis() - lastType > 30 && typewriterIndex < len) {
+        typewriterIndex++;
+        lastType = millis();
+        if (typewriterIndex % 2 == 0) tone(BZ_SFX, 200, 5);
+      }
+
+      char line[26];
+      for (int i = 0; i < 4; i++) {
+        int start = i * 25;
+        if (start < typewriterIndex) {
+          int take = (typewriterIndex - start > 25) ? 25 : (typewriterIndex - start);
+          strncpy(line, globalBuffer + start, take);
+          line[take] = '\0';
+          u8g2.drawStr(2, 30 + (i * 8), line);
+        }
+      }
+
+      // Choices
+      if (typewriterIndex >= len) {
+        for (int i = 0; i < CHOICE_COUNT; i++) {
+          const char* labelPtr = (const char*)pgm_read_ptr(&(story[currentScene].choices[i].label));
+          strcpy_P(globalBuffer, labelPtr);
+          if (strlen(globalBuffer) > 0) {
+            int ty = 62;
+            int tx = 5 + (i * 42);
+            if (selectedChoice == i) u8g2.drawFrame(tx-2, ty-7, 40, 9);
+            u8g2.setFont(u8g2_font_4x6_tf);
+            u8g2.drawStr(tx, ty, globalBuffer);
+          }
+        }
+      }
+    }
+  } while (u8g2.nextPage());
+}
+
+void handleInput() {
+  static unsigned long lastMove = 0;
+  if (millis() - lastMove < 200) return;
+
+  if (digitalRead(BTN_INVERT) == LOW) { isInverted = !isInverted; lastMove = millis(); }
+  if (digitalRead(BTN_STATS) == LOW) { 
+    if(state == NARRATIVE) state = CYBERDECK; else if(state == CYBERDECK) state = NARRATIVE;
+    lastMove = millis(); 
+  }
+
+  if (state == TITLE) {
+    if (digitalRead(BTN_ACTION) == LOW) {
+      state = NARRATIVE; currentScene = 0; typewriterIndex = 0;
+      totalNuyen = 100; reputation = 0;
+      playAggressiveSynth(); lastMove = millis();
+    }
+    return;
+  }
+
+  if (state == NARRATIVE) {
+    // Fast-forward text
+    const char* textPtr = (const char*)pgm_read_ptr(&(story[currentScene].text));
+    int textLen = strlen_P(textPtr);
+    
+    if (digitalRead(BTN_ACTION) == LOW && typewriterIndex < textLen) {
+      typewriterIndex = textLen;
+      lastMove = millis();
+      return;
+    }
+
+    if (typewriterIndex >= textLen) {
+      int stickX = analogRead(STICK_X);
+      if (stickX < 300 && selectedChoice > 0) { selectedChoice--; playBeep(); lastMove = millis(); }
+      if (stickX > 700 && selectedChoice < CHOICE_COUNT - 1) { 
+        const char* nextLabelPtr = (const char*)pgm_read_ptr(&(story[currentScene].choices[selectedChoice+1].label));
+        if (strlen_P(nextLabelPtr) > 0) {
+          selectedChoice++; playBeep(); lastMove = millis(); 
+        }
+      }
+
+      if (digitalRead(BTN_ACTION) == LOW) {
+        int nextS = pgm_read_word(&(story[currentScene].choices[selectedChoice].nextScene));
+        changeScene(nextS);
+        lastMove = millis();
+      }
+    }
+  }
+}
+
+void setup() {
+  pinMode(BTN_ACTION, INPUT_PULLUP);
+  pinMode(BTN_INVERT, INPUT_PULLUP);
+  pinMode(BTN_STATS,  INPUT_PULLUP);
+  u8g2.begin();
+  randomSeed(analogRead(A2));
+}
+
+void loop() {
+  handleInput();
+
+  if (state == HACKING_MINIGAME) {
+    if (millis() - stateTimer > 3000) {
+      state = NARRATIVE;
+      int nextS = pgm_read_word(&(story[currentScene].choices[selectedChoice].nextScene));
+      changeScene(nextS); 
+    }
+  }
+
+  drawGame();
+}
+
+void drawGame() {
+  drawVisualNovel();
+}

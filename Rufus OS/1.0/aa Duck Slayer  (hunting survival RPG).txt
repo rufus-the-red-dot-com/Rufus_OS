@@ -1,0 +1,354 @@
+#include <Arduino.h>
+#include <U8g2lib.h>
+#include <Wire.h>
+#include <EEPROM.h>
+
+// SH1106 128x64 I2C
+U8G2_SH1106_128X64_NONAME_1_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+
+// --- PINS ---
+#define PIN_TRIGGER 11 
+#define PIN_MENU    10 
+#define BZ_HIGH     3
+#define BZ_LOW      6
+#define STICK_X     A0
+#define STICK_Y     A1
+
+// --- WORLD CONSTANTS ---
+#define WORLD_WIDTH 1000
+#define ZENITH_LIMIT -280 
+#define GROUND_LIMIT 110  
+#define NUM_STARS 15
+
+// --- EEPROM ADDR ---
+#define ADDR_MAGIC    0   
+#define ADDR_HISCORE  2   
+#define ADDR_KILLS    4   
+#define ADDR_LEVEL    8   
+#define ADDR_MONEY    10  
+#define ADDR_EXP      12  
+
+// --- IMAGE DATA (35x35) ---
+static const unsigned char duck_frame0[] PROGMEM = {
+  0x00,0x00,0x30,0x00,0xf8,0x00,0x00,0x2a,0x00,0xf8,0x00,0x00,0x27,0x00,0xf8,
+  0x00,0x80,0x32,0x00,0xf8,0x00,0x60,0x10,0x00,0xf8,0x00,0x10,0x10,0x00,0xf8,
+  0x00,0x10,0x08,0x00,0xf8,0x00,0x10,0x08,0x00,0xf8,0x00,0x10,0x04,0x00,0xf8,
+  0x00,0x10,0x04,0x00,0xf8,0x00,0x08,0x04,0x16,0xf8,0x00,0x08,0x04,0x23,0xf8,
+  0x00,0x08,0x82,0x33,0xf8,0x00,0x08,0xd2,0x73,0xf8,0x00,0x06,0xde,0xa3,0xfb,
+  0xc0,0x07,0xdf,0x37,0xfc,0xfa,0x07,0xdf,0xff,0xff,0xfc,0x07,0x9f,0x1f,0xf8,
+  0xf8,0x07,0xbc,0x00,0xf8,0xf0,0x07,0x10,0x00,0xf8,0xa0,0x03,0x08,0x00,0xf8,
+  0x20,0x00,0x06,0x00,0xf8,0x40,0x80,0x01,0x00,0xf8,0x80,0x63,0x00,0x00,0xf8,
+  0x00,0x1a,0x00,0x00,0xf8,0xc0,0x07,0x00,0x00,0xf8,0xc0,0x03,0x00,0x00,0xf8,
+  0xc0,0x01,0x00,0x00,0xf8,0x80,0x00,0x00,0x00,0xf8,0x00,0x00,0x00,0x00,0xf8,
+  0x00,0x00,0x00,0x00,0xf8,0x00,0x00,0x00,0x00,0xf8,0x00,0x00,0x00,0x00,0xf8,
+  0x00,0x00,0x00,0x00,0xf8,0x00,0x00,0x00,0x00,0xf8
+};
+
+static const unsigned char duck_frame1[] PROGMEM = {
+  0x00,0x00,0x00,0x00,0xf8,0x00,0x00,0x00,0x00,0xf8,0x00,0x00,0x00,0x00,0xf8,
+  0x00,0x00,0x00,0x00,0xf8,0x00,0x00,0x00,0x00,0xf8,0x00,0x00,0x00,0x00,0xf8,
+  0x00,0x00,0x00,0x00,0xf8,0x00,0x00,0x00,0x00,0xf8,0x00,0x00,0x00,0x00,0xf8,
+  0x00,0x00,0x00,0x00,0xf8,0x00,0x00,0x00,0x16,0xf8,0x00,0x00,0x00,0x23,0xf8,
+  0x00,0x00,0x80,0x33,0xf8,0x00,0xc0,0xd1,0x73,0xf8,0x00,0xfe,0xdf,0xa3,0xfb,
+  0xc0,0xff,0xdf,0x37,0xfc,0xfa,0xff,0xdf,0xff,0xff,0xfc,0xff,0x9f,0x1f,0xf8,
+  0xf8,0xff,0xbf,0x00,0xf8,0xf0,0xff,0x0f,0x00,0xf8,0xa0,0xfb,0x03,0x00,0xf8,
+  0x20,0xf8,0x03,0x00,0xf8,0x40,0xf8,0x03,0x00,0xf8,0x80,0xfb,0x03,0x00,0xf8,
+  0x00,0xfa,0x07,0x00,0xf8,0xc0,0xff,0x07,0x00,0xf8,0xc0,0xeb,0x07,0x00,0xf8,
+  0xc0,0xd1,0x07,0x00,0xf8,0x80,0xe0,0x0f,0x00,0xf8,0x00,0x40,0x0f,0x00,0xf8,
+  0x00,0x80,0x0f,0x00,0xf8,0x00,0x00,0x1f,0x00,0xf8,0x00,0x00,0x1e,0x00,0xf8,
+  0x00,0x00,0x00,0x00,0xf8,0x00,0x00,0x00,0x00,0xf8,0x00,0x00,0x00,0x00,0xf8
+};
+
+static const unsigned char duck_death[] PROGMEM = {
+  0x00,0x00,0x00,0x00,0xf8,0x00,0x00,0xc0,0x00,0xf8,0x00,0x00,0x20,0x01,0xf8,
+  0x00,0x00,0x20,0x02,0xf8,0x00,0x00,0x10,0x72,0xf8,0x00,0x00,0xd0,0xf2,0xf8,
+  0x00,0x00,0xd8,0xfa,0xf8,0x00,0x0c,0x1c,0x7f,0xf8,0x00,0x3e,0x3e,0x1d,0xf8,
+  0x00,0x7f,0xfe,0x07,0xf8,0x80,0xff,0xfe,0x05,0xf8,0xc0,0xff,0xfe,0x07,0xf8,
+  0xc0,0xff,0xfc,0x1f,0xf8,0xe0,0xfb,0xf9,0x39,0xf8,0xe0,0xf7,0xf1,0x20,0xf8,
+  0xa0,0xe2,0x05,0x00,0xf8,0x60,0xc0,0x4f,0x00,0xf8,0x00,0x80,0xff,0x7d,0xf8,
+  0x00,0x00,0xff,0xff,0xf8,0x00,0x00,0xff,0xff,0xf9,0x00,0x00,0xfe,0xfe,0xfb,
+  0x00,0x00,0x0e,0xfe,0xfb,0x00,0x00,0x07,0xaa,0xfa,0x00,0x00,0x03,0x44,0xf9,
+  0x00,0x00,0x03,0x86,0xfa,0x00,0xf8,0xc3,0x19,0xf8,0x00,0x08,0x23,0x25,0xf8,
+  0x00,0x08,0x44,0x22,0xf8,0x00,0x08,0xb3,0x10,0xf8,0x00,0x90,0x88,0x08,0xf8,
+  0x00,0xe0,0x86,0x07,0xf8,0x00,0x00,0x00,0x00,0xf8,0x00,0x00,0x00,0x00,0xf8,
+  0x00,0x00,0x00,0x00,0xf8,0x00,0x00,0x00,0x00,0xf8,0x00,0x00,0x00,0x00,0xf8
+};
+
+// --- GAME STATE ---
+enum State { TITLE, HUNTING, MISS, CAMP, STARVED, RESET_CONFIRM };
+State gameState = TITLE;
+bool isDarkMode = true;
+
+// Active Target
+float viewX = 0, viewY = 0;
+float duckX, duckY;
+uint8_t duckFrame = 0;
+bool faceRight = false, isGolden = false;
+int flapCount = 0;
+
+// "Easter Egg" Falling Duck Data
+bool fDuckActive = false;
+float fdX, fdY, fdBounceY, fdRollX;
+int fdBounceCount = 0;
+bool fdFlipH = false, fdFlipV = false;
+unsigned long fdStateTime = 0;
+
+// World Stars
+int starX[NUM_STARS], starY[NUM_STARS];
+
+// RPG & Economy
+int sessionScore = 0, ammo = 15, baggedDucks = 0;
+float hunger = 100.0;
+uint16_t money = 50, hiScore = 0, currentExp = 0, hunterLevel = 1;
+uint32_t careerKills = 0;
+
+int menuIdx = 0;
+const char* menuOptions[] = {"RESUME", "EAT BIRD", "SELL BIRDS", "BUY10AMMO", "LT/DK"};
+unsigned long lastFrameTime = 0, spawnTime = 0, lastHungerTime = 0;
+
+void playSfx(int f, int d) { tone(BZ_HIGH, f, d); }
+
+void saveProgress() {
+  EEPROM.put(ADDR_MAGIC, (uint16_t)1234); EEPROM.put(ADDR_HISCORE, hiScore);
+  EEPROM.put(ADDR_KILLS, careerKills); EEPROM.put(ADDR_LEVEL, hunterLevel);
+  EEPROM.put(ADDR_MONEY, money); EEPROM.put(ADDR_EXP, currentExp);
+}
+
+void loadProgress() {
+  uint16_t magic; EEPROM.get(ADDR_MAGIC, magic);
+  if (magic == 1234) {
+    EEPROM.get(ADDR_HISCORE, hiScore); EEPROM.get(ADDR_KILLS, careerKills);
+    EEPROM.get(ADDR_LEVEL, hunterLevel); EEPROM.get(ADDR_MONEY, money);
+    EEPROM.get(ADDR_EXP, currentExp);
+  }
+  if (hunterLevel < 1) hunterLevel = 1;
+}
+
+void resetProgress() {
+  hiScore = 0; careerKills = 0; hunterLevel = 1; money = 50; currentExp = 0;
+  saveProgress(); playSfx(300, 500);
+}
+
+float getWrappedDist(float target, float current, float maxRange) {
+  float diff = target - current;
+  if (diff > maxRange / 2) diff -= maxRange;
+  if (diff < -maxRange / 2) diff += maxRange;
+  return diff;
+}
+
+void readControls() {
+  int rawX = analogRead(STICK_X); int rawY = analogRead(STICK_Y);
+  viewX += (rawX - 512) / 105.0f;
+  if (viewX > WORLD_WIDTH / 2) viewX -= WORLD_WIDTH;
+  if (viewX < -WORLD_WIDTH / 2) viewX += WORLD_WIDTH;
+  viewY += (rawY - 512) / 105.0f;
+  viewY = constrain(viewY, ZENITH_LIMIT, GROUND_LIMIT + 40); 
+}
+
+void drawSmartDuck(int x, int y, const unsigned char* data, bool flipH, bool flipV) {
+  for (int row = 0; row < 35; row++) {
+    for (int col = 0; col < 35; col++) {
+      int r = flipV ? (34 - row) : row;
+      int c = flipH ? (34 - col) : col;
+      int byteIdx = r * 5 + (c / 8);
+      int bitIdx = c % 8;
+      if (pgm_read_byte(&data[byteIdx]) & (1 << bitIdx)) u8g2.drawPixel(x + col, y + row);
+    }
+  }
+}
+
+void spawnDuck() {
+  bool offScreen = false;
+  isGolden = (random(0, 100) < 10);
+  while (!offScreen) {
+    duckX = random(-WORLD_WIDTH / 2, WORLD_WIDTH / 2);
+    duckY = random(-140, 40); 
+    if (abs(getWrappedDist(duckX, viewX, WORLD_WIDTH)) > 100 || abs(duckY - viewY) > 60) offScreen = true;
+  }
+  if (isGolden) { playSfx(1000, 50); playSfx(1500, 50); }
+  else { playSfx(880, 50); delay(50); playSfx(660, 100); }
+  spawnTime = millis(); flapCount = 0;
+}
+
+void checkShot() {
+  if (ammo <= 0) { playSfx(150, 100); return; }
+  tone(BZ_LOW, 140, 40); ammo--;
+  float dx = getWrappedDist(duckX, viewX, WORLD_WIDTH);
+  float dy = duckY - viewY;
+  
+  if (abs(dx) < 17 && abs(dy) < 17) {
+    fDuckActive = true; fdX = duckX; fdY = duckY;
+    fdBounceY = 0; fdBounceCount = 0; fdRollX = (dx > 0 ? 3.0 : -3.0);
+    fdFlipH = faceRight; fdFlipV = false; fdStateTime = millis();
+    
+    sessionScore += (isGolden ? 5 : 1); careerKills++; baggedDucks++; currentExp += (isGolden ? 5 : 1);
+    if (sessionScore > hiScore) hiScore = sessionScore;
+    
+    uint16_t expNeeded = hunterLevel * 10;
+    if (currentExp >= expNeeded) { currentExp = 0; hunterLevel++; saveProgress(); playSfx(1200, 200); }
+    
+    spawnDuck();
+    playSfx(1200, 100);
+  }
+}
+
+void updateFallingDuck() {
+  if (!fDuckActive) return;
+  if (fdBounceCount < 2) {
+    fdY += 4.5 + fdBounceY;
+    if (fdBounceY < 0) fdBounceY += 1.5;
+    if (fdY >= GROUND_LIMIT) {
+      fdY = GROUND_LIMIT; fdBounceCount++;
+      fdBounceY = (fdBounceCount == 1) ? -10.0 : -5.0;
+      if (fdBounceCount == 2) { fdBounceY = 0; fdFlipV = random(0, 2); fdFlipH = random(0, 2); }
+    }
+    fdFlipH = (millis() / 450) % 2; 
+  } else {
+    fdX += fdRollX; fdRollX *= 0.92;
+    if (millis() - fdStateTime > 4000) fDuckActive = false;
+  }
+}
+
+void drawDirectionIndicator() {
+  unsigned long elapsed = millis() - spawnTime;
+  if (elapsed % 3000 > 1000) return; // Frequency increased: 1s every 3s
+  if ((millis() / 100) % 2 == 0) return;   
+
+  float dx = getWrappedDist(duckX, viewX, WORLD_WIDTH);
+  float dy = duckY - viewY;
+  if (abs(dx) < 55 && abs(dy) < 25) return;
+
+  bool L = (dx < -25); bool R = (dx > 25);
+  bool U = (dy < -20); bool D = (dy > 20);
+
+  if (L && U) u8g2.drawTriangle(10, 18, 10, 10, 18, 10);
+  else if (R && U) u8g2.drawTriangle(110, 10, 118, 10, 118, 18);
+  else if (L && D) u8g2.drawTriangle(10, 46, 10, 54, 18, 54);
+  else if (R && D) u8g2.drawTriangle(118, 46, 118, 54, 110, 54);
+  else if (L) u8g2.drawTriangle(10, 32, 18, 28, 18, 36);
+  else if (R) u8g2.drawTriangle(118, 32, 110, 28, 110, 36);
+  else if (U) u8g2.drawTriangle(64, 8, 60, 16, 68, 16);
+  else if (D) u8g2.drawTriangle(64, 56, 60, 48, 68, 48);
+}
+
+void drawUI() {
+  u8g2.firstPage();
+  do {
+    if (!isDarkMode) { u8g2.setDrawColor(1); u8g2.drawBox(0,0,128,64); u8g2.setDrawColor(0); }
+    else u8g2.setDrawColor(1);
+
+    if (gameState == TITLE) {
+      u8g2.setFont(u8g2_font_9x15_tf); u8g2.drawStr(22, 22, "DUCK SLAYER 64");
+      u8g2.setFont(u8g2_font_5x8_tf); u8g2.setCursor(22, 30); u8g2.print("WWW.RUFUSTHERED.COM");
+      u8g2.setFont(u8g2_font_5x8_tf); u8g2.setCursor(22, 38); u8g2.print("CASH: $"); u8g2.print(money);
+      u8g2.setCursor(22, 48); u8g2.print("LEVEL: "); u8g2.print(hunterLevel);
+      u8g2.setFont(u8g2_font_4x6_tf); u8g2.drawStr(20, 58, "[D11] PLAY | [D10] DATA RESET");
+    } 
+    else if (gameState == CAMP) {
+      u8g2.setFont(u8g2_font_5x8_tf); u8g2.drawStr(45, 10, "-- CAMP --");
+      u8g2.setCursor(5, 22); u8g2.print("$"); u8g2.print(money);
+      u8g2.setCursor(5, 32); u8g2.print("BAG:"); u8g2.print(baggedDucks);
+      u8g2.setCursor(5, 42); u8g2.print("LVL:"); u8g2.print(hunterLevel);
+      u8g2.setCursor(5, 52); u8g2.print("EXP:"); u8g2.print(currentExp);
+      for(int i=0; i<5; i++) {
+        u8g2.setCursor(60, 22 + (i*8));
+        if(i == menuIdx) u8g2.print("> "); else u8g2.print("  ");
+        u8g2.print(menuOptions[i]);
+        if(i == 3) { u8g2.setCursor(110, 22 + (i*8)); u8g2.print(ammo); }
+      }
+    }
+    else {
+      for(int i=0; i<NUM_STARS; i++) {
+        int sx = 64 + (int)getWrappedDist(starX[i], viewX, WORLD_WIDTH);
+        int sy = 32 + (int)(starY[i] - viewY);
+        if (sx > 0 && sx < 128 && sy > 0 && sy < 64) u8g2.drawPixel(sx, sy);
+      }
+      int groundY = 32 + (GROUND_LIMIT - (int)viewY);
+      if (groundY >= 0 && groundY <= 64) u8g2.drawHLine(0, groundY, 128);
+
+      if (fDuckActive) {
+        int fsx = 64 + (int)getWrappedDist(fdX, viewX, WORLD_WIDTH);
+        int fsy = 32 + (int)(fdY - viewY);
+        if (fsx > -40 && fsx < 168 && fsy > -40 && fsy < 104) drawSmartDuck(fsx-17, fsy-17, duck_death, fdFlipH, fdFlipV);
+      }
+
+      int sx = 64 + (int)getWrappedDist(duckX, viewX, WORLD_WIDTH);
+      int sy = 32 + (int)(duckY - viewY);
+      if (sx > -40 && sx < 168 && sy > -40 && sy < 104) drawSmartDuck(sx-17, sy-17, (duckFrame == 0 ? duck_frame0 : duck_frame1), faceRight, false);
+
+      if (gameState == HUNTING) drawDirectionIndicator();
+
+      // CROSSHAIR
+      u8g2.drawHLine(64-12, 32, 24); u8g2.drawVLine(64, 32-8, 16);
+      
+      // HUD
+      u8g2.setFont(u8g2_font_4x6_tf);
+      u8g2.setCursor(2, 62); u8g2.print("A:"); u8g2.print(ammo);
+      u8g2.setCursor(24, 62); u8g2.print("L"); u8g2.print(hunterLevel);
+      // HUNGER BAR
+      u8g2.drawFrame(45, 58, 25, 4); u8g2.drawBox(45, 58, (int)(hunger * 0.25), 4);
+      // EXP BAR (New Restoration)
+      float expPerc = (float)currentExp / (hunterLevel * 10.0);
+      u8g2.drawFrame(75, 58, 25, 4); u8g2.drawBox(75, 58, (int)(expPerc * 25), 4);
+      u8g2.setCursor(105, 62); u8g2.print("$"); u8g2.print(money);
+
+      if (gameState == MISS) u8g2.drawStr(48, 45, "FUCK!");
+      if (gameState == STARVED) u8g2.drawStr(40, 45, "STARVED!");
+    }
+  } while (u8g2.nextPage());
+}
+
+void setup() {
+  pinMode(PIN_TRIGGER, INPUT_PULLUP); pinMode(PIN_MENU, INPUT_PULLUP);
+  u8g2.begin(); loadProgress();
+  for(int i=0; i<NUM_STARS; i++) { starX[i] = random(-500, 500); starY[i] = random(-200, 80); }
+}
+
+void loop() {
+  static bool lastMenu = HIGH, lastTrig = HIGH;
+  bool curMenu = digitalRead(PIN_MENU) == LOW, curTrig = digitalRead(PIN_TRIGGER) == LOW;
+
+  if (curMenu && !lastMenu) {
+    if (gameState == TITLE) resetProgress();
+    else if (gameState == HUNTING) { gameState = CAMP; menuIdx = 0; }
+    else if (gameState == CAMP) { menuIdx = (menuIdx + 1) % 5; playSfx(600, 20); }
+    delay(50);
+  }
+  lastMenu = curMenu;
+
+  if (gameState == CAMP) {
+    if (curTrig && !lastTrig) {
+      if (menuIdx == 0) { gameState = HUNTING; saveProgress(); }
+      else if (menuIdx == 1 && baggedDucks > 0) { baggedDucks--; hunger = min(100.0, hunger + 35); playSfx(1000, 100); }
+      else if (menuIdx == 2 && baggedDucks > 0) { money += (baggedDucks * (isGolden ? 50 : 15)); baggedDucks = 0; saveProgress(); playSfx(1500, 100); }
+      else if (menuIdx == 3 && money >= 20) { money -= 20; ammo += 10; saveProgress(); playSfx(1800, 100); }
+      else if (menuIdx == 4) isDarkMode = !isDarkMode;
+      delay(150);
+    }
+  }
+  else if (gameState == TITLE || gameState == STARVED) {
+    if (curTrig && !lastTrig) { hunger = 100; ammo = 15; baggedDucks = 0; spawnDuck(); gameState = HUNTING; delay(50); }
+  } 
+  else if (gameState == HUNTING) {
+    readControls(); updateFallingDuck();
+    if (millis() - lastHungerTime > 1500) { hunger -= 0.5; lastHungerTime = millis(); }
+    if (hunger <= 0) { gameState = STARVED; saveProgress(); }
+    float speedMult = 1.0 + (hunterLevel * 0.08); 
+    duckX += (sin(millis() / 500.0) * (2.0 * speedMult)); 
+    if (duckX > WORLD_WIDTH / 2) duckX -= WORLD_WIDTH;
+    if (duckX < -WORLD_WIDTH / 2) duckX += WORLD_WIDTH;
+    duckY -= (0.35 * speedMult); 
+    if (millis() - lastFrameTime > max(40, 200 - (hunterLevel * 5))) { 
+      duckFrame = !duckFrame; lastFrameTime = millis(); 
+      flapCount++; if (flapCount >= 8) { faceRight = !faceRight; flapCount = 0; }
+    }
+    if (curTrig && !lastTrig) checkShot();
+    if (duckY < ZENITH_LIMIT - 60) { gameState = MISS; }
+  } 
+  else if (gameState == MISS) {
+    readControls(); updateFallingDuck();
+    if (millis() - lastHungerTime > 1500) { hunger -= 0.5; lastHungerTime = millis(); }
+    if (duckY < ZENITH_LIMIT - 200) spawnDuck(); // Reset after bird leaves dome
+  }
+  lastTrig = curTrig; drawUI();
+}

@@ -1,0 +1,278 @@
+#include <Arduino.h>
+#include <U8g2lib.h>
+#include <Wire.h>
+#include <EEPROM.h>
+
+// SH1106 128x64 I2C
+U8G2_SH1106_128X64_NONAME_1_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+
+// --- PIN DEFINITIONS ---
+#define STICK_X     A0
+#define STICK_Y     A1
+#define STICK_SW    2    // Radar Pulse
+#define BZ_HIGH     3    // Scavenge Chirps
+#define BZ_LOW      6    // Pulse Lasso Thump
+#define PIN_MENU    10   // Workshop
+#define PIN_TRIGGER 11   // Fire
+
+// --- WORLD CONSTANTS ---
+#define WORLD_WIDTH 1000
+#define ZENITH_LIMIT -280 
+#define GROUND_LIMIT 110  
+#define NUM_STARS 15
+#define NUM_BOTS 3
+
+// --- EEPROM ADDR ---
+#define ADDR_MAGIC    0   
+#define ADDR_CREDITS  2   
+#define ADDR_LEVEL    4   
+#define ADDR_EXP      6   
+
+// --- CUSTOM ROBOT GRAPHICS (24x24) ---
+static const unsigned char robot0_bits[] PROGMEM = {
+  0x06,0x00,0x60,0xea,0xff,0x57,0x34,0x00,0x2c,0xd8,0xff,0x1b,0x28,0x00,0x14,
+  0x1e,0x00,0x78,0x09,0xd3,0x90,0xcb,0xc3,0xd3,0x49,0x4a,0x92,0x45,0xc3,0xa2,
+  0x43,0xc3,0xca,0xc5,0xd3,0xa3,0xcb,0xc3,0xc3,0x05,0x00,0xa0,0x89,0x89,0x91,
+  0x11,0x00,0x88,0x21,0x00,0x84,0xa1,0x18,0x84,0x21,0x3c,0x84,0x21,0x3c,0x85,
+  0x2e,0x3c,0x74,0xf0,0xff,0x0f,0x00,0x3c,0x00,0x00,0x18,0x00
+};
+
+static const unsigned char robot1_bits[] PROGMEM = {
+  0x06,0x00,0x60,0xea,0xff,0x57,0x34,0x00,0x2c,0xd8,0xff,0x1b,0x28,0x00,0x14,
+  0x1e,0x00,0x78,0x09,0xcb,0x90,0xcb,0xc3,0xd3,0x49,0x52,0x92,0x45,0x42,0xa2,
+  0x43,0x42,0xca,0x45,0x4a,0xa2,0xcb,0xc3,0xc3,0x05,0x00,0xa0,0x89,0x91,0x91,
+  0x13,0x00,0xc8,0x21,0x00,0x84,0x2d,0x19,0xb4,0x2d,0xbc,0xb4,0x29,0x18,0x94,
+  0x2e,0x3c,0x74,0xf0,0xdb,0x0f,0x00,0x3c,0x00,0x00,0x18,0x00
+};
+
+static const unsigned char robot_dead_bits[] PROGMEM = {
+  0x06,0x00,0x60,0xea,0xff,0x57,0x34,0x00,0x2c,0xd8,0xff,0x1b,0x28,0x00,0x14,
+  0x1e,0x00,0x78,0x29,0xcb,0x94,0xcb,0xd3,0xd3,0x49,0xc3,0x92,0x45,0x42,0xa2,
+  0x73,0x42,0xce,0xc5,0x42,0xa3,0xcb,0xc3,0xc3,0x05,0x00,0xa0,0x09,0x10,0x90,
+  0x13,0x81,0xc8,0x21,0x44,0x84,0x2d,0x19,0xb4,0x2d,0xbc,0xb4,0x29,0x18,0x94,
+  0x2e,0x3c,0x74,0xf0,0xff,0x0f,0x00,0x3c,0x00,0x00,0x7e,0x00
+};
+
+// --- GAME STATE ---
+enum State { TITLE, EXPLORE, WORKSHOP, REBOOTING };
+State gameState = TITLE;
+
+float viewX = 0, viewY = 0;
+float botX[NUM_BOTS], botY[NUM_BOTS];
+uint8_t botFrame = 0;
+int starX[NUM_STARS], starY[NUM_STARS];
+
+// "Ghost" Scrap Physics
+bool scrapActive = false;
+float scrapX, scrapY, scrapBounceY, scrapRollX;
+int scrapBounces = 0;
+bool scrapFlipH, scrapFlipV;
+unsigned long scrapTimer = 0;
+
+// RPG Stats
+uint16_t credits = 100, level = 1, currentExp = 0;
+float battery = 100.0;
+int inventory = 0;
+unsigned long lastFrameTime = 0, lastHungerTime = 0, radarTime = 0, spawnTime = 0;
+
+void playSfx(int f, int d) { tone(BZ_HIGH, f, d); }
+void playBass(int f, int d) { tone(BZ_LOW, f, d); }
+
+void saveGame() {
+  EEPROM.put(ADDR_MAGIC, (uint16_t)777); EEPROM.put(ADDR_CREDITS, credits);
+  EEPROM.put(ADDR_LEVEL, level); EEPROM.put(ADDR_EXP, currentExp);
+}
+
+void loadGame() {
+  uint16_t magic; EEPROM.get(ADDR_MAGIC, magic);
+  if (magic == 777) {
+    EEPROM.get(ADDR_CREDITS, credits); EEPROM.get(ADDR_LEVEL, level);
+    EEPROM.get(ADDR_EXP, currentExp);
+  }
+  if (level < 1) level = 1;
+}
+
+float getWrappedDist(float target, float current) {
+  float diff = target - current;
+  if (diff > WORLD_WIDTH / 2) diff -= WORLD_WIDTH;
+  if (diff < -WORLD_WIDTH / 2) diff += WORLD_WIDTH;
+  return diff;
+}
+
+void spawnBot(int i) {
+  botX[i] = random(-WORLD_WIDTH/2, WORLD_WIDTH/2);
+  botY[i] = random(-180, 40);
+  spawnTime = millis();
+}
+
+// Bit-flipping draw for 24x24
+void drawDroid(int x, int y, const unsigned char* data, bool flipH, bool flipV) {
+  for (int row = 0; row < 24; row++) {
+    for (int col = 0; col < 24; col++) {
+      int r = flipV ? (23 - row) : row;
+      int c = flipH ? (23 - col) : col;
+      int byteIdx = r * 3 + (c / 8);
+      int bitIdx = c % 8;
+      if (pgm_read_byte(&data[byteIdx]) & (1 << bitIdx)) u8g2.drawPixel(x + col, y + row);
+    }
+  }
+}
+
+void setup() {
+  pinMode(PIN_TRIGGER, INPUT_PULLUP); pinMode(PIN_MENU, INPUT_PULLUP);
+  pinMode(STICK_SW, INPUT_PULLUP);
+  u8g2.begin(); loadGame();
+  for(int i=0; i<NUM_STARS; i++) { starX[i]=random(-500,500); starY[i]=random(-200,80); }
+  for(int i=0; i<NUM_BOTS; i++) spawnBot(i);
+}
+
+void updateScrap() {
+  if (!scrapActive) return;
+  if (scrapBounces < 2) {
+    scrapY += 4.5 + scrapBounceY;
+    if (scrapBounceY < 0) scrapBounceY += 1.5;
+    if (scrapY >= GROUND_LIMIT) {
+      scrapY = GROUND_LIMIT; scrapBounces++;
+      scrapBounceY = (scrapBounces == 1) ? -10.0 : -5.0;
+      if (scrapBounces == 2) { scrapBounceY = 0; scrapFlipV = random(0,2); scrapFlipH = random(0,2); }
+      playBass(60, 40);
+    }
+    scrapFlipH = (millis() / 300) % 2; // Falling flop
+  } else {
+    scrapX += scrapRollX; scrapRollX *= 0.92;
+    if (millis() - scrapTimer > 5000) scrapActive = false;
+  }
+}
+
+void checkFire() {
+  playBass(150, 40); playSfx(2000, 10);
+  for(int i=0; i<NUM_BOTS; i++) {
+    float dx = getWrappedDist(botX[i], viewX);
+    float dy = botY[i] - viewY;
+    if (abs(dx) < 12 && abs(dy) < 12) {
+      // Spawn Scrap Easter Egg
+      scrapActive = true; scrapX = botX[i]; scrapY = botY[i];
+      scrapBounceY = 0; scrapBounces = 0; scrapRollX = (dx > 0 ? 2.5 : -2.5);
+      scrapTimer = millis(); scrapFlipH = false; scrapFlipV = false;
+      
+      inventory++; currentExp += 10;
+      if (currentExp >= (level * 50)) { level++; currentExp = 0; saveGame(); playSfx(1000, 200); }
+      spawnBot(i);
+      playSfx(1500, 100);
+    }
+  }
+}
+
+void drawDirectionalRadar() {
+  unsigned long elapsed = millis() - spawnTime;
+  if (elapsed % 3000 > 800) return;
+  if ((millis() / 100) % 2 == 0) return;
+  float dx = getWrappedDist(botX[0], viewX); // Track closest/first bot
+  float dy = botY[0] - viewY;
+  if (abs(dx) < 40 && abs(dy) < 20) return;
+
+  bool L = (dx < -25); bool R = (dx > 25);
+  bool U = (dy < -20); bool D = (dy > 20);
+
+  if (L && U) u8g2.drawTriangle(10,18,10,10,18,10);
+  else if (R && U) u8g2.drawTriangle(110,10,118,10,118,18);
+  else if (L && D) u8g2.drawTriangle(10,46,10,54,18,54);
+  else if (R && D) u8g2.drawTriangle(118,46,118,54,110,54);
+  else if (L) u8g2.drawTriangle(10,32,18,28,18,36);
+  else if (R) u8g2.drawTriangle(118,32,110,28,110,36);
+  else if (U) u8g2.drawTriangle(64,8,60,16,68,16);
+  else if (D) u8g2.drawTriangle(64,56,60,48,68,48);
+}
+
+void loop() {
+  static bool lastTrig = HIGH, lastMenu = HIGH, lastSw = HIGH;
+  bool curTrig = digitalRead(PIN_TRIGGER) == LOW;
+  bool curMenu = digitalRead(PIN_MENU) == LOW;
+  bool curSw = digitalRead(STICK_SW) == LOW;
+
+  if (gameState == TITLE) {
+    u8g2.firstPage();
+    do {
+      u8g2.setFont(u8g2_font_9x15_tf); u8g2.drawStr(15, 30, "MECH-TECH 360");
+      u8g2.setFont(u8g2_font_4x6_tf); u8g2.drawStr(25, 50, "PULL TRIGGER TO BOOT");
+    } while (u8g2.nextPage());
+    if (curTrig && !lastTrig) { gameState = EXPLORE; battery = 100; playSfx(1000, 200); }
+  } 
+  
+  else if (gameState == EXPLORE) {
+    viewX += (analogRead(STICK_X) - 512) / 100.0f;
+    viewY += (analogRead(STICK_Y) - 512) / 100.0f;
+    if (viewX > WORLD_WIDTH/2) viewX -= WORLD_WIDTH;
+    if (viewX < -WORLD_WIDTH/2) viewX += WORLD_WIDTH;
+    viewY = constrain(viewY, ZENITH_LIMIT, GROUND_LIMIT + 40);
+
+    if (millis() - lastHungerTime > 2000) { battery -= (0.5 + (inventory * 0.1)); lastHungerTime = millis(); }
+    if (battery <= 0) gameState = REBOOTING;
+
+    if (millis() - lastFrameTime > 400) { botFrame = !botFrame; lastFrameTime = millis(); }
+    if (curTrig && !lastTrig) checkFire();
+    if (curSw && !lastSw) { radarTime = millis(); playSfx(1200, 50); battery -= 1; }
+    if (curMenu && !lastMenu) { gameState = WORKSHOP; }
+    
+    updateScrap();
+
+    u8g2.firstPage();
+    do {
+      for(int i=0; i<NUM_STARS; i++) {
+        int sx = 64 + (int)getWrappedDist(starX[i], viewX);
+        int sy = 32 + (int)(starY[i] - viewY);
+        if (sx > 0 && sx < 128 && sy > 0 && sy < 64) u8g2.drawPixel(sx, sy);
+      }
+      int groundY = 32 + (GROUND_LIMIT - (int)viewY);
+      if (groundY >= 0 && groundY <= 64) u8g2.drawHLine(0, groundY, 128);
+
+      if (scrapActive) {
+        int ssx = 64 + (int)getWrappedDist(scrapX, viewX);
+        int ssy = 32 + (int)(scrapY - viewY);
+        if (ssx > -20 && ssx < 148) drawDroid(ssx-12, ssy-12, robot_dead_bits, scrapFlipH, scrapFlipV);
+      }
+
+      for(int i=0; i<NUM_BOTS; i++) {
+        int sx = 64 + (int)getWrappedDist(botX[i], viewX);
+        int sy = 32 + (int)(botY[i] - viewY);
+        if (sx > -20 && sx < 148) drawDroid(sx-12, sy-12, (botFrame ? robot0_bits : robot1_bits), false, false);
+      }
+      
+      drawDirectionalRadar();
+      u8g2.drawHLine(54, 32, 20); u8g2.drawVLine(64, 22, 20); // Tactical Crosshair
+
+      u8g2.setFont(u8g2_font_4x6_tf);
+      u8g2.setCursor(2, 62); u8g2.print("PWR:"); u8g2.print((int)battery);
+      u8g2.setCursor(35, 62); u8g2.print("L"); u8g2.print(level);
+      u8g2.drawFrame(55, 58, 40, 4); u8g2.drawBox(55, 58, (int)(battery * 0.4), 4);
+      u8g2.setCursor(105, 62); u8g2.print("$"); u8g2.print(credits);
+    } while (u8g2.nextPage());
+  }
+
+  else if (gameState == WORKSHOP) {
+    if (curTrig && !lastTrig) { 
+      if (inventory > 0) { credits += (inventory * 25); inventory = 0; saveGame(); playSfx(1800, 100); }
+    }
+    if (curMenu && !lastMenu) {
+      if (credits >= 15 && battery < 100) { credits -= 15; battery = min(100.0, battery + 40); playSfx(1000, 100); }
+      else { gameState = EXPLORE; saveGame(); }
+    }
+    u8g2.firstPage();
+    do { 
+      u8g2.setFont(u8g2_font_5x8_tf); u8g2.drawStr(40, 12, "-- WORKSHOP --");
+      u8g2.setCursor(10, 30); u8g2.print("CREDITS: $"); u8g2.print(credits);
+      u8g2.setCursor(10, 40); u8g2.print("SHARDS IN BAG: "); u8g2.print(inventory);
+      u8g2.setFont(u8g2_font_4x6_tf);
+      u8g2.drawStr(10, 55, "[TRIG] SELL ALL SHARDS ($25/ea)");
+      u8g2.drawStr(10, 63, "[MENU] CHARGE BATTERY ($15)");
+    } while (u8g2.nextPage());
+  }
+
+  else if (gameState == REBOOTING) {
+    u8g2.firstPage();
+    do { u8g2.drawStr(30, 32, "CRITICAL POWER FAILURE"); u8g2.drawStr(35, 45, "PRESS TRIG TO REBOOT"); } while (u8g2.nextPage());
+    if (curTrig && !lastTrig) { credits = max(0, credits-50); inventory=0; gameState = TITLE; }
+  }
+
+  lastTrig = curTrig; lastMenu = curMenu; lastSw = curSw;
+}

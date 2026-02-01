@@ -1,0 +1,181 @@
+#include <Arduino.h>
+#include <U8g2lib.h>
+#include <Wire.h>
+
+U8G2_SH1107_PIMORONI_128X128_1_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+
+#define L_X A0 
+#define L_Y A1 
+#define R_X A2 
+#define R_Y A3
+#define L_SW 2  
+#define R_SW 3  
+#define BZ 8 
+
+// --- RPG DATA ---
+int level = 1, curExp = 0, expNext = 100, scrap = 0, upgradePoints = 0;
+int hp = 100, maxHp = 100, pSpeed = 4, fireDelay = 250;
+
+// --- PHYSICS ---
+float px=64, py=64, pAngle = 0;
+float ex[6], ey[6]; 
+int eSize[6]; // 3=Big, 2=Med, 1=Small, 0=Inactive
+int bx=-10, by=-10, bvx=0, bvy=0; 
+
+// PERSISTENT LOOT
+#define MAX_LOOT 10
+int lx[MAX_LOOT], ly[MAX_LOOT];
+bool lActive[MAX_LOOT];
+int lootIdx = 0;
+
+bool isPaused = false, isDead = false;
+int menuIdx = 0;
+
+void sfx(int f, int d) { tone(BZ, f, d); }
+
+void spawnAsteroid(int i, int size, int x, int y) {
+  if (x == -1) { 
+    float ang = random(0, 360) * 0.01745;
+    ex[i] = 64 + cos(ang) * 55;
+    ey[i] = 64 + sin(ang) * 55;
+  } else { 
+    ex[i] = x; ey[i] = y;
+  }
+  eSize[i] = size;
+}
+
+void setup() {
+  u8g2.begin();
+  u8g2.setBusClock(800000); 
+  pinMode(L_SW, INPUT_PULLUP); pinMode(R_SW, INPUT_PULLUP);
+  pinMode(BZ, OUTPUT);
+  spawnAsteroid(0, 3, -1, -1); spawnAsteroid(1, 3, -1, -1);
+}
+
+void loop() {
+  int lx_in = analogRead(L_X); int ly_in = analogRead(L_Y);
+  int rx_in = analogRead(R_X); int ry_in = analogRead(R_Y);
+  bool lClick = !digitalRead(L_SW); bool rClick = !digitalRead(R_SW);
+
+  if (isDead) {
+    if (lClick || rClick) { hp=100; scrap=0; isDead=false; spawnAsteroid(0, 3, -1, -1); }
+    return;
+  }
+
+  static bool lastR = false;
+  if (rClick && !lastR) { isPaused = !isPaused; sfx(600, 40); }
+  lastR = rClick;
+
+  if (isPaused) {
+    if (lx_in < 400) { menuIdx = (menuIdx <= 0) ? 2 : menuIdx - 1; delay(150); }
+    if (lx_in > 600) { menuIdx = (menuIdx >= 2) ? 0 : menuIdx + 1; delay(150); }
+    if (lClick && (scrap >= 25 || upgradePoints > 0)) {
+      if (menuIdx == 0) pSpeed++;
+      if (menuIdx == 1) fireDelay = max(60, fireDelay - 30);
+      if (menuIdx == 2) { maxHp += 20; hp = maxHp; }
+      if (upgradePoints > 0) upgradePoints--; else scrap -= 25;
+      sfx(1200, 50); delay(200);
+    }
+  } else {
+    // 1. FIXED ROTATION (UP IS UP)
+    int rdx = ry_in - 512; 
+    int rdy = 512 - rx_in;
+    if (abs(rdx) > 100 || abs(rdy) > 100) pAngle = atan2(rdy, rdx);
+
+    // 2. MOVEMENT
+    if (lx_in > 600) py += pSpeed; if (lx_in < 400) py -= pSpeed; 
+    if (ly_in > 600) px -= pSpeed; if (ly_in < 400) px += pSpeed; 
+    px = constrain(px, 12, 115); py = constrain(py, 12, 115);
+
+    // 3. SHOOTING
+    static uint32_t lastB = 0;
+    if (bx < 0 && (millis() - lastB > (uint32_t)fireDelay) && (abs(rdx) > 200 || abs(rdy) > 200)) {
+      bx = px; by = py; bvx = cos(pAngle) * 12; bvy = sin(pAngle) * 12;
+      lastB = millis(); sfx(350, 10);
+    }
+
+    // 4. ASTEROID LOGIC
+    for (int i = 0; i < 6; i++) {
+      if (eSize[i] == 0) continue;
+      if (ex[i] < px) ex[i] += 0.4; else ex[i] -= 0.4;
+      if (ey[i] < py) ey[i] += 0.4; else ey[i] -= 0.4;
+
+      if (abs(px - ex[i]) < (eSize[i] * 3) && abs(py - ey[i]) < (eSize[i] * 3)) {
+        hp -= 20; eSize[i] = 0; spawnAsteroid(i, 3, -1, -1); sfx(80, 100);
+      }
+
+      if (bx >= 0 && abs(bx - ex[i]) < (eSize[i] * 4) && abs(by - ey[i]) < (eSize[i] * 4)) {
+        int oldX = ex[i], oldY = ey[i], oldSize = eSize[i];
+        bx = -10; sfx(1500, 20); eSize[i] = 0; 
+        
+        if (oldSize > 1) { 
+          spawnAsteroid(i, oldSize - 1, oldX + 4, oldY + 4);
+          for(int j=0; j<6; j++) { if(eSize[j]==0) { spawnAsteroid(j, oldSize - 1, oldX - 4, oldY - 4); break; } }
+        } else { 
+          lx[lootIdx] = oldX; ly[lootIdx] = oldY; lActive[lootIdx] = true;
+          lootIdx = (lootIdx + 1) % MAX_LOOT;
+          bool anyBig = false; for(int j=0; j<6; j++) if(eSize[j]>=2) anyBig=true;
+          if(!anyBig) spawnAsteroid(i, 3, -1, -1);
+        }
+      }
+    }
+
+    // 5. BULLETS & LOOT
+    if (bx >= 0) {
+      bx += bvx; by += bvy;
+      if (bx < 5 || bx > 123 || by < 5 || by > 123) bx = -10;
+    }
+    for (int i = 0; i < MAX_LOOT; i++) {
+      if (lActive[i] && abs(px - lx[i]) < 10 && abs(py - ly[i]) < 10) {
+        lActive[i] = false; scrap += 20; curExp += 25;
+        if (curExp >= expNext) { level++; curExp = 0; upgradePoints++; expNext += 50; }
+      }
+    }
+    if (hp <= 0) isDead = true;
+  }
+
+  u8g2.firstPage();
+  do {
+    if (isPaused) {
+      u8g2.setFont(u8g2_font_6x10_tf); u8g2.setFontDirection(3);
+      // TITLE
+      u8g2.setCursor(125, 115); u8g2.print("--- SYSTEM ---");
+      // STATS (Each gets its own line and vertical spot)
+      u8g2.setCursor(110, 110); u8g2.print("RANK: "); u8g2.print(level);
+      u8g2.setCursor(98, 110);  u8g2.print("SCRAP: "); u8g2.print(scrap);
+      u8g2.setCursor(86, 110);  u8g2.print("UPG PTS: "); u8g2.print(upgradePoints);
+      
+      u8g2.drawHLine(15, 80, 108); // UI DIVIDER
+
+      // MARKET
+      u8g2.setCursor(65, 110); u8g2.print(menuIdx == 0 ? "> ENGINE [SPD]" : "  ENGINE [SPD]");
+      u8g2.setCursor(53, 110); u8g2.print(menuIdx == 1 ? "> WEAPON [FR]" : "  WEAPON [FR]");
+      u8g2.setCursor(41, 110); u8g2.print(menuIdx == 2 ? "> REPAIR [HP]" : "  REPAIR [HP]");
+    } else {
+      u8g2.drawFrame(4, 4, 120, 120);
+      // SHIP
+      int x1 = px+cos(pAngle)*8, y1 = py+sin(pAngle)*8;
+      int x2 = px+cos(pAngle+2.5)*6, y2 = py+sin(pAngle+2.5)*6;
+      int x3 = px+cos(pAngle-2.5)*6, y3 = py+sin(pAngle-2.5)*6;
+      u8g2.drawTriangle(x1, y1, x2, y2, x3, y3);
+
+      for (int i = 0; i < 6; i++) {
+        if (eSize[i] == 3) { 
+           u8g2.drawFrame(ex[i]-5, ey[i]-5, 11, 11); u8g2.drawLine(ex[i]-7, ey[i], ex[i]-5, ey[i]-5);
+           u8g2.drawLine(ex[i]+5, ey[i]+5, ex[i]+7, ey[i]);
+        } else if (eSize[i] == 2) { 
+           u8g2.drawFrame(ex[i]-3, ey[i]-3, 7, 7);
+        } else if (eSize[i] == 1) { 
+           u8g2.drawDisc(ex[i], ey[i], 2);
+        }
+      }
+      for (int i = 0; i < MAX_LOOT; i++) if (lActive[i]) u8g2.drawBox(lx[i]-1, ly[i]-1, 3, 3);
+      if (bx >= 0) u8g2.drawPixel(bx, by);
+
+      u8g2.setFont(u8g2_font_4x6_tf); u8g2.setFontDirection(3);
+      u8g2.setCursor(122, 122); u8g2.print("HP:"); u8g2.print(hp);
+      u8g2.setCursor(122, 55);  u8g2.print("$:"); u8g2.print(scrap);
+      u8g2.drawBox(115, 15, 3, map(curExp, 0, expNext, 0, 35));
+    }
+  } while (u8g2.nextPage());
+}

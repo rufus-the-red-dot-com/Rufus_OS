@@ -1,0 +1,411 @@
+#include <Arduino.h>
+#include <U8g2lib.h>
+#include <Wire.h>
+
+// SH1106 128x64 I2C
+U8G2_SH1106_128X64_NONAME_1_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+
+// --- PIN DEFINITIONS ---
+#define STICK_X    A0
+#define STICK_Y    A1
+#define STICK_SW   2  
+#define BTN_FIRE_L 11 
+#define BTN_FIRE_R 9  
+#define BTN_DASH   5  
+#define BTN_STATS  10 
+#define BZ_SFX     3  
+#define BZ_SFX_2   6  
+
+// --- GAME CONSTANTS ---
+#define MAP_SIZE 12
+#define FOV      0.66
+#define ROT_SPD  0.12
+#define MOV_SPD  0.10
+#define MAX_BULLETS 3
+#define MAX_ENEMIES 4
+#define HEAL_DELAY 2000 // 2 seconds of standing still to start healing
+#define HEAL_RATE  500  // Heal 1 HP every 0.5 seconds
+
+// --- WORLD MAP ---
+const uint8_t worldMap[MAP_SIZE][MAP_SIZE] = {
+  {1,1,1,1,1,1,1,1,1,1,1,1},
+  {1,0,0,0,0,0,1,0,0,0,0,1},
+  {1,0,1,1,0,0,1,0,1,1,0,1},
+  {1,0,1,0,0,0,0,0,0,1,0,1},
+  {1,0,0,0,0,1,1,0,0,0,0,1},
+  {1,1,0,1,1,1,1,1,1,0,1,1},
+  {1,1,0,1,0,0,0,0,1,0,1,1},
+  {1,0,0,0,0,1,1,0,0,0,0,1},
+  {1,0,1,1,0,1,1,0,1,1,0,1},
+  {1,0,0,1,0,0,0,0,1,0,0,1},
+  {1,0,0,0,0,0,0,0,0,0,0,1},
+  {1,1,1,1,1,1,1,1,1,1,1,1}
+};
+
+// --- DATA STRUCTURES ---
+struct Bullet {
+  float x, y;
+  float vx, vy;
+  bool active;
+};
+
+struct Enemy {
+  float x, y;
+  float startX, startY;
+  bool active;
+};
+
+enum GameState { TITLE, PLAYING, STATS, COMPLETION, GAMEOVER };
+
+// --- GLOBAL STATE ---
+float posX = 1.5, posY = 1.5;  
+float dirX = 1.0, dirY = 0.0;  
+float planeX = 0.0, planeY = 0.66; 
+GameState state = TITLE;
+
+Bullet bullets[MAX_BULLETS];
+Enemy enemies[MAX_ENEMIES];
+
+int missionNumber = 1;
+long nuyen = 0;
+int health = 100;
+int totalEnemiesDeleted = 0;
+int currentMissionDeletes = 0;
+float zBuffer[64]; 
+unsigned long stateTimer = 0;
+
+// Healing State
+unsigned long lastActionTime = 0;
+unsigned long lastHealTick = 0;
+bool isHealActive = false;
+
+// --- AUDIO ---
+void playFireSound() { tone(BZ_SFX, 600, 30); tone(BZ_SFX_2, 200, 20); }
+void playHitSound() { tone(BZ_SFX, 150, 50); tone(BZ_SFX_2, 80, 50); }
+void playKillSound() { tone(BZ_SFX, 800, 100); tone(BZ_SFX_2, 400, 100); }
+void playMissionSuccess() {
+  tone(BZ_SFX, 440, 200); delay(200);
+  tone(BZ_SFX, 659, 200); delay(200);
+  tone(BZ_SFX, 880, 400);
+}
+
+// --- LOGIC ---
+void spawnEnemies() {
+  currentMissionDeletes = 0;
+  enemies[0] = {8.5, 1.5, 8.5, 1.5, true};
+  enemies[1] = {1.5, 10.5, 1.5, 10.5, true};
+  enemies[2] = {10.5, 10.5, 10.5, 10.5, true};
+  enemies[3] = {4.5, 4.5, 4.5, 4.5, true};
+}
+
+void fireBullet() {
+  for(int i=0; i<MAX_BULLETS; i++) {
+    if(!bullets[i].active) {
+      bullets[i].active = true;
+      bullets[i].x = posX;
+      bullets[i].y = posY;
+      bullets[i].vx = dirX * 0.45;
+      bullets[i].vy = dirY * 0.45;
+      playFireSound();
+      lastActionTime = millis(); // Reset heal timer on fire
+      return;
+    }
+  }
+}
+
+void updateProjectiles() {
+  for(int i=0; i<MAX_BULLETS; i++) {
+    if(!bullets[i].active) continue;
+    bullets[i].x += bullets[i].vx;
+    bullets[i].y += bullets[i].vy;
+
+    if (bullets[i].x < 0 || bullets[i].x >= MAP_SIZE || bullets[i].y < 0 || bullets[i].y >= MAP_SIZE) {
+      bullets[i].active = false;
+      continue;
+    }
+
+    if(worldMap[int(bullets[i].x)][int(bullets[i].y)] > 0) {
+      bullets[i].active = false;
+      continue;
+    }
+
+    for(int j=0; j<MAX_ENEMIES; j++) {
+      if(!enemies[j].active) continue;
+      float dx = bullets[i].x - enemies[j].x;
+      float dy = bullets[i].y - enemies[j].y;
+      if((dx*dx + dy*dy) < 0.6) { 
+        enemies[j].active = false;
+        bullets[i].active = false;
+        currentMissionDeletes++;
+        totalEnemiesDeleted++;
+        nuyen += 150;
+        playKillSound();
+      }
+    }
+  }
+
+  if (currentMissionDeletes >= MAX_ENEMIES && state == PLAYING) {
+    state = COMPLETION;
+    stateTimer = millis();
+    playMissionSuccess();
+  }
+}
+
+void updateEnemies() {
+  for(int i=0; i<MAX_ENEMIES; i++) {
+    if(!enemies[i].active) continue;
+    
+    float dx = (posX - enemies[i].x);
+    float dy = (posY - enemies[i].y);
+    float dist = sqrt(dx*dx + dy*dy);
+    
+    if(dist < 8.0 && dist > 0.4) {
+      enemies[i].x += (dx/dist) * (0.03 + (missionNumber * 0.005));
+      enemies[i].y += (dy/dist) * (0.03 + (missionNumber * 0.005));
+    }
+    
+    if(dist < 0.5) {
+      health -= 1;
+      if(millis() % 250 < 40) playHitSound();
+      lastActionTime = millis(); // Damage also delays healing
+    }
+  }
+}
+
+void updateHealing() {
+  if (state != PLAYING) return;
+  
+  if (millis() - lastActionTime > HEAL_DELAY) {
+    isHealActive = true;
+    if (health < 100 && millis() - lastHealTick > HEAL_RATE) {
+      health++;
+      lastHealTick = millis();
+    }
+  } else {
+    isHealActive = false;
+  }
+}
+
+// --- RENDERING ---
+void draw3D() {
+  for(int i=0; i<64; i++) zBuffer[i] = 1000.0;
+
+  for(int x = 0; x < 64; x++) {
+    float cameraX = 2 * x / (float)64 - 1; 
+    float rayDirX = dirX + planeX * cameraX;
+    float rayDirY = dirY + planeY * cameraX;
+    int mapX = int(posX), mapY = int(posY);
+    float dX = (rayDirX == 0) ? 1e30 : abs(1 / rayDirX);
+    float dY = (rayDirY == 0) ? 1e30 : abs(1 / rayDirY);
+    float sideX, sideY, perp;
+    int stX, stY, hit = 0, side;
+
+    if (rayDirX < 0) { stX = -1; sideX = (posX - mapX) * dX; }
+    else { stX = 1; sideX = (mapX + 1.0 - posX) * dX; }
+    if (rayDirY < 0) { stY = -1; sideY = (posY - mapY) * dY; }
+    else { stY = 1; sideY = (mapY + 1.0 - posY) * dY; }
+
+    while (hit == 0) {
+      if (sideX < sideY) { sideX += dX; mapX += stX; side = 0; }
+      else { sideY += dY; mapY += stY; side = 1; }
+      if (mapX < 0 || mapX >= MAP_SIZE || mapY < 0 || mapY >= MAP_SIZE) break;
+      if (worldMap[mapX][mapY] > 0) hit = 1;
+    }
+    
+    if (hit) {
+      if (side == 0) perp = (mapX - posX + (1 - stX) / 2) / rayDirX;
+      else perp = (mapY - posY + (1 - stY) / 2) / rayDirY;
+
+      zBuffer[x] = perp; 
+      int lh = (int)(64 / perp);
+      int ds = max(0, -lh / 2 + 32);
+      int de = min(63, lh / 2 + 32);
+
+      if (side == 1) {
+        for(int y=ds; y<de; y++) if((x+y)%2 == 0) u8g2.drawPixel(x*2, y);
+      } else {
+        u8g2.drawVLine(x*2, ds, lh);
+        u8g2.drawVLine(x*2+1, ds, lh);
+      }
+    }
+  }
+
+  for(int i=0; i<MAX_ENEMIES; i++) {
+    if(!enemies[i].active) continue;
+    float sx = enemies[i].x - posX;
+    float sy = enemies[i].y - posY;
+    float invDet = 1.0 / (planeX * dirY - dirX * planeY);
+    float tx = invDet * (dirY * sx - dirX * sy);
+    float ty = invDet * (-planeY * sx + planeX * sy);
+    
+    if(ty > 0.2) { 
+      int screenX = int((64 / 2) * (1 + tx / ty));
+      int h = abs(int(64 / ty));
+      int midX = screenX * 2;
+      int midY = 32;
+      
+      if(screenX >= 0 && screenX < 64 && ty < zBuffer[screenX]) {
+        u8g2.drawBox(midX - h/6, midY - h/6, h/3, h/3); 
+        u8g2.drawFrame(midX - h/4, midY - h/4, h/2, h/2); 
+        u8g2.drawHLine(midX - h/2, midY, h); 
+        u8g2.drawVLine(midX - h/3, midY, h/3); 
+        u8g2.drawVLine(midX + h/3, midY, h/3); 
+        if((millis() / 200) % 2 == 0) u8g2.drawPixel(midX, midY); 
+      }
+    }
+  }
+
+  for(int i=0; i<MAX_BULLETS; i++) {
+    if(!bullets[i].active) continue;
+    float sx = bullets[i].x - posX;
+    float sy = bullets[i].y - posY;
+    float invDet = 1.0 / (planeX * dirY - dirX * planeY);
+    float tx = invDet * (dirY * sx - dirX * sy);
+    float ty = invDet * (-planeY * sx + planeX * sy);
+    if(ty > 0.1) {
+      int screenX = int((64 / 2) * (1 + tx / ty));
+      int size = max(1, (int)(4 / ty));
+      if(screenX >= 0 && screenX < 64 && ty < zBuffer[screenX]) {
+        u8g2.drawBox(screenX*2 - size/2, 32 - size/2, size, size);
+      }
+    }
+  }
+}
+
+void drawWeapon() {
+  u8g2.setDrawColor(0);
+  u8g2.drawBox(52, 44, 28, 20); 
+  u8g2.setDrawColor(1);
+  u8g2.drawBox(58, 48, 12, 16);    
+  u8g2.drawFrame(54, 52, 20, 10);  
+  u8g2.drawBox(63, 44, 2, 4);      
+  u8g2.drawHLine(50, 60, 28);      
+}
+
+void handleInput() {
+  int jX = analogRead(STICK_X) - 512;
+  int jY = analogRead(STICK_Y) - 512;
+
+  if (state == TITLE) {
+    if (digitalRead(BTN_FIRE_L) == LOW) { 
+      missionNumber = 1;
+      posX = 1.5; posY = 1.5;
+      dirX = 1.0; dirY = 0.0;
+      planeX = 0.0; planeY = 0.66;
+      health = 100; totalEnemiesDeleted = 0; nuyen = 0;
+      state = PLAYING; spawnEnemies(); 
+      lastActionTime = millis();
+      delay(250); 
+    }
+    return;
+  }
+
+  if (state == COMPLETION) {
+    if (digitalRead(BTN_FIRE_L) == LOW && millis() - stateTimer > 2000) {
+      missionNumber++;
+      posX = 1.5; posY = 1.5;
+      state = PLAYING; spawnEnemies(); 
+      lastActionTime = millis();
+      delay(250);
+    }
+    return;
+  }
+
+  if (state == PLAYING) {
+    bool inputDetected = false;
+
+    if (abs(jX) > 120) {
+      float rot = (jX > 0) ? ROT_SPD : -ROT_SPD;
+      float oldDirX = dirX;
+      dirX = dirX * cos(rot) - dirY * sin(rot);
+      dirY = oldDirX * sin(rot) + dirY * cos(rot);
+      float oldPlaneX = planeX;
+      planeX = planeX * cos(rot) - planeY * sin(rot);
+      planeY = oldPlaneX * sin(rot) + planeY * cos(rot);
+      inputDetected = true;
+    }
+
+    if (abs(jY) > 120) {
+      float mX = (jY < 0) ? dirX * MOV_SPD : -dirX * MOV_SPD;
+      float mY = (jY < 0) ? dirY * MOV_SPD : -dirY * MOV_SPD;
+      if (worldMap[int(posX + mX)][int(posY)] == 0) posX += mX;
+      if (worldMap[int(posX)][int(posY + mY)] == 0) posY += mY;
+      inputDetected = true;
+    }
+
+    static bool fireReleased = true;
+    if (digitalRead(BTN_FIRE_L) == LOW || digitalRead(BTN_FIRE_R) == LOW) {
+      if(fireReleased) { fireBullet(); fireReleased = false; }
+      inputDetected = true;
+    } else fireReleased = true;
+
+    if (inputDetected) lastActionTime = millis();
+
+    if (digitalRead(BTN_STATS) == LOW) { state = STATS; delay(250); }
+  } else if (state == STATS) {
+    if (digitalRead(BTN_STATS) == LOW) { state = PLAYING; delay(250); }
+  }
+}
+
+void render() {
+  u8g2.firstPage();
+  do {
+    if (state == TITLE) {
+      u8g2.setFont(u8g2_font_helvB12_tr); u8g2.drawStr(5, 30, "CYBER BREACH");
+      u8g2.setFont(u8g2_font_5x7_tf); u8g2.drawStr(22, 50, "PRESS 11 TO BREACH");
+    } 
+    else if (state == COMPLETION) {
+      u8g2.drawFrame(5, 5, 118, 54);
+      u8g2.setFont(u8g2_font_6x12_tf);
+      u8g2.drawStr(15, 20, "NODE BREACHED");
+      u8g2.setFont(u8g2_font_5x7_tf);
+      u8g2.drawStr(10, 32, "SYS-ADMIN DEFEATED.");
+      u8g2.setCursor(10, 42); u8g2.print("NEXT: LEVEL "); u8g2.print(missionNumber + 1);
+      u8g2.drawStr(10, 52, "JACKING IN...");
+      if((millis() / 500) % 2 == 0) u8g2.drawStr(20, 62, "[PRESS 11 TO SYNC]");
+    }
+    else if (state == PLAYING) {
+      draw3D();
+      drawWeapon();
+      
+      u8g2.setFont(u8g2_font_4x6_tf);
+      u8g2.setDrawColor(1); u8g2.drawBox(0, 0, 128, 7);
+      u8g2.setDrawColor(0); u8g2.setCursor(2, 6);
+      
+      // HP Display - flashes if healing
+      if (isHealActive && (millis() / 250) % 2 == 0) u8g2.print("REGEN...");
+      else { u8g2.print("HP:"); u8g2.print(health); }
+      
+      u8g2.setCursor(45, 6); u8g2.print("M:"); u8g2.print(missionNumber);
+      u8g2.setCursor(65, 6); u8g2.print("DRONES:"); u8g2.print(MAX_ENEMIES - currentMissionDeletes);
+      u8g2.setCursor(105, 6); u8g2.print("$"); u8g2.print(nuyen);
+      u8g2.setDrawColor(1);
+    }
+    else if (state == STATS) {
+      u8g2.drawFrame(5, 5, 118, 54);
+      u8g2.setFont(u8g2_font_5x7_tf);
+      u8g2.drawStr(10, 15, "SYSTEM STATUS // DECK");
+      u8g2.setCursor(10, 30); u8g2.print("CREDITS HIJACKED: "); u8g2.print(nuyen);
+      u8g2.setCursor(10, 40); u8g2.print("PROGRAMS DELETED: "); u8g2.print(totalEnemiesDeleted);
+      u8g2.drawStr(10, 55, "STATS [BTN 10] TO CLOSE");
+    }
+  } while (u8g2.nextPage());
+}
+
+void setup() {
+  pinMode(BTN_FIRE_L, INPUT_PULLUP); pinMode(BTN_FIRE_R, INPUT_PULLUP);
+  pinMode(BTN_DASH,   INPUT_PULLUP); pinMode(BTN_STATS,  INPUT_PULLUP);
+  pinMode(STICK_SW,   INPUT_PULLUP); u8g2.begin();
+  randomSeed(analogRead(A2));
+}
+
+void loop() {
+  handleInput();
+  if(state == PLAYING) {
+    updateProjectiles();
+    updateEnemies();
+    updateHealing();
+    if(health <= 0) state = TITLE; 
+  }
+  render();
+}

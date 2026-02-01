@@ -1,0 +1,17 @@
+Component       Pin     Arduino Pin
+MPU-6050	VCC	5V
+MPU-6050	GND	GND
+MPU-6050	SDA	A4
+MPU-6050	SCL	A5
+OLED Screen	VCC	5V
+OLED Screen	GND	GND
+OLED Screen	SDA	A4
+OLED Screen	SCL	A5
+Buzzer (High)	(-)	GND
+High Buzzer	(+)	D3
+Buzzer (Low)	(-)	GND
+Low Buzzer	(+)	D6
+Trigger Switch	Pin 1	D11
+Trigger Switch	Pin 2	GND
+Menu/Reset 	Pin 1	D10
+Menu/Reset 	Pin 2	GND

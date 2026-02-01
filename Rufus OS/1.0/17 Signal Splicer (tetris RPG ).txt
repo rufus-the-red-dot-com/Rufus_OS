@@ -1,0 +1,344 @@
+#include <Arduino.h>
+#include <U8g2lib.h>
+#include <Wire.h>
+
+// SH1106 128x64 I2C
+U8G2_SH1106_128X64_NONAME_1_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+
+// --- PIN DEFINITIONS ---
+#define STICK_X    A0
+#define STICK_Y    A1
+#define BTN_ACTION 11 // Rotate Piece
+#define BTN_INVERT 9  // Toggle Light/Dark Mode
+#define BTN_STATS  10 // Open Cyberdeck (Stats)
+#define BZ_SFX      3  
+#define BZ_SFX_2    6  
+
+// --- TETRIS CONSTANTS ---
+#define TETRIS_W 10
+#define TETRIS_H 20
+#define CELL_SIZE 3
+#define GRID_X_OFFSET 85
+#define GRID_Y_OFFSET 2
+
+// --- ENUMS ---
+enum GameState { TITLE, PLAYING, CLEARING, MILESTONE, COMMUNICATION, CYBERDECK, GAMEOVER };
+
+// --- TETROMINO DATA ---
+const uint16_t SHAPES[7][4] = {
+  {0x0F00, 0x4444, 0x0F00, 0x4444}, // I
+  {0x4460, 0x0E80, 0xC440, 0x2E00}, // L
+  {0x44C0, 0x8E00, 0x6440, 0x0E20}, // J
+  {0x0660, 0x0660, 0x0660, 0x0660}, // O
+  {0x06C0, 0x4620, 0x06C0, 0x4620}, // S
+  {0x0E40, 0x4C40, 0x4E00, 0x4640}, // T
+  {0x0C60, 0x2640, 0x0C60, 0x2640}  // Z
+};
+
+// --- CYBERPUNK FLAVOR DATA ---
+const char* CORPORATIONS[] = {"ARASAKA", "MILITECH", "KANG TAO", "ZETATECH", "BIOTECHNICA", "NIGHT CORP", "MAELSTROM"};
+const char* RUNNERS[] = {"DEX", "T-BUG", "JAKE", "KIWI", "LUCY", "ROGUE", "ALT", "MAINE"};
+const char* MESSAGES[] = {
+  "ICE IS THAWING.", "WATCH THE TRACE.", "JACK OUT SOON.", "DUMP THE DATA.",
+  "NETWATCH SPOTTED.", "KEEP SPLICING.", "BLACKWALL BREACH.", "NEURAL LINK STABLE.",
+  "SIPHON THE CREDITS.", "CORP LIES DELETED.", "THE MATRIX LIVES.", "FOLLOW THE RABBIT."
+};
+
+// --- GLOBAL STATE ---
+GameState state = TITLE;
+uint8_t grid[TETRIS_W][TETRIS_H];
+int curX, curY, curType, curRot;
+unsigned long lastDrop = 0;
+unsigned long dropInterval = 800;
+
+// RPG & Stats
+long score = 0;
+long highScore = 0;
+long totalNuyen = 0;
+int level = 1;
+int experience = 0;
+int corpsHackedCount = 0;
+int xpToNextLevel = 500;
+long nextMilestone = 500;
+bool isInverted = false;
+unsigned long stateTimer = 0;
+
+// Hacking HUD state
+const char* currentTarget = "NONE";
+const char* runnerName = "SYSTEM";
+const char* runnerMsg = "INITIALIZING...";
+int nuyenEarned = 0;
+unsigned long msgTimer = 0;
+
+// --- AUDIO ---
+void playCyberMusic() {
+  int notes[] = {110, 110, 146, 110, 164, 110, 130, 110};
+  for(int i=0; i<8; i++) {
+    tone(BZ_SFX, notes[i], 80);
+    delay(130);
+  }
+  noTone(BZ_SFX);
+}
+
+void playLineClearSound(int count) {
+  for(int i=0; i<count*2; i++) {
+    tone(BZ_SFX, 1000 + (i*200), 30);
+    delay(40);
+  }
+}
+
+// --- TETRIS LOGIC ---
+
+bool checkCollision(int x, int y, int r) {
+  uint16_t shape = SHAPES[curType][r];
+  for (int i = 0; i < 4; i++) {
+    for (int j = 0; j < 4; j++) {
+      if (shape & (1 << (15 - (i * 4 + j)))) {
+        int targetX = x + j;
+        int targetY = y + i;
+        if (targetX < 0 || targetX >= TETRIS_W || targetY >= TETRIS_H) return true;
+        if (targetY >= 0 && grid[targetX][targetY]) return true;
+      }
+    }
+  }
+  return false;
+}
+
+void lockPiece() {
+  uint16_t shape = SHAPES[curType][curRot];
+  for (int i = 0; i < 4; i++) {
+    for (int j = 0; j < 4; j++) {
+      if (shape & (1 << (15 - (i * 4 + j)))) {
+        int targetX = curX + j;
+        int targetY = curY + i;
+        if (targetY >= 0 && targetY < TETRIS_H) grid[targetX][targetY] = curType + 1;
+      }
+    }
+  }
+}
+
+void spawnPiece() {
+  curType = random(0, 7);
+  curRot = 0;
+  curX = TETRIS_W / 2 - 2;
+  curY = 0;
+  if (checkCollision(curX, curY, curRot)) {
+    state = GAMEOVER;
+    stateTimer = millis();
+  }
+}
+
+void clearLines() {
+  int cleared = 0;
+  for (int y = TETRIS_H - 1; y >= 0; y--) {
+    bool full = true;
+    for (int x = 0; x < TETRIS_W; x++) {
+      if (!grid[x][y]) { full = false; break; }
+    }
+    if (full) {
+      cleared++;
+      for (int moveY = y; moveY > 0; moveY--) {
+        for (int x = 0; x < TETRIS_W; x++) grid[x][moveY] = grid[x][moveY - 1];
+      }
+      for (int x = 0; x < TETRIS_W; x++) grid[x][0] = 0;
+      y++; 
+    }
+  }
+
+  if (cleared > 0) {
+    int points = cleared * 100 * level;
+    score += points;
+    experience += points;
+    playLineClearSound(cleared);
+    
+    if (score >= nextMilestone) {
+      currentTarget = CORPORATIONS[random(0, 7)];
+      nuyenEarned = random(500, 5000);
+      totalNuyen += nuyenEarned;
+      corpsHackedCount++;
+      nextMilestone += 1000;
+      state = MILESTONE;
+      stateTimer = millis();
+      dropInterval = max(100UL, 800 - (level * 50));
+    }
+    
+    if (experience >= xpToNextLevel) {
+      level++; experience = 0; xpToNextLevel += 500;
+    }
+  }
+}
+
+// --- DRAWING ---
+
+void drawBlock(int x, int y, uint8_t type) {
+  int px = GRID_X_OFFSET + (x * CELL_SIZE);
+  int py = GRID_Y_OFFSET + (y * CELL_SIZE);
+  u8g2.drawFrame(px, py, CELL_SIZE, CELL_SIZE);
+}
+
+void drawGame() {
+  u8g2.firstPage();
+  do {
+    u8g2.setDrawColor(1);
+    if(isInverted) u8g2.drawBox(0,0,128,64);
+    u8g2.setDrawColor(isInverted ? 0 : 1);
+
+    if (state == TITLE) {
+      u8g2.setFont(u8g2_font_7x14_tf);
+      u8g2.drawStr(20, 25, "SIGNAL SPLICER");
+      u8g2.setFont(u8g2_font_5x7_tf);
+      u8g2.drawStr(25, 45, "JACK IN [BTN 11]");
+    }
+    else if (state == GAMEOVER) {
+      u8g2.setFont(u8g2_font_6x12_tf);
+      u8g2.drawStr(30, 25, "LOCKOUT!");
+      u8g2.setFont(u8g2_font_4x6_tf);
+      u8g2.setCursor(30, 40); u8g2.print("SCORE: "); u8g2.print(score);
+      u8g2.drawStr(20, 55, "REBOOTING SYSTEM...");
+    }
+    else if (state == MILESTONE) {
+      u8g2.setFont(u8g2_font_6x12_tf);
+      u8g2.drawStr(10, 20, "HACK SUCCESS!");
+      u8g2.setFont(u8g2_font_5x7_tf);
+      u8g2.setCursor(10, 35); u8g2.print("TARGET: "); u8g2.print(currentTarget);
+      u8g2.setCursor(10, 48); u8g2.print("NUYEN: +"); u8g2.print(nuyenEarned);
+      u8g2.drawFrame(5, 5, 118, 54);
+      u8g2.setFont(u8g2_font_4x6_tf);
+      u8g2.drawStr(35, 60, "CONTINUE [BTN 11]");
+    }
+    else if (state == COMMUNICATION) {
+      u8g2.drawFrame(0, 0, 128, 64);
+      u8g2.setFont(u8g2_font_6x12_tf);
+      u8g2.drawStr(10, 18, "[!] INCOMING FEED");
+      u8g2.setFont(u8g2_font_5x7_tf);
+      u8g2.setCursor(10, 36); u8g2.print("RUNNER: "); u8g2.print(runnerName);
+      u8g2.setCursor(10, 50); u8g2.print("MSG: "); u8g2.print(runnerMsg);
+    }
+    else if (state == CYBERDECK) {
+      u8g2.drawFrame(0, 0, 128, 64);
+      u8g2.drawBox(0,0, 128, 10);
+      u8g2.setDrawColor(isInverted ? 1 : 0);
+      u8g2.setFont(u8g2_font_5x7_tf);
+      u8g2.drawStr(5, 8, "CYBERDECK v4.2 // RUNNER OS");
+      u8g2.setDrawColor(isInverted ? 0 : 1);
+      u8g2.setCursor(5, 24); u8g2.print("LVL: "); u8g2.print(level);
+      u8g2.setCursor(5, 34); u8g2.print("NUYEN: "); u8g2.print(totalNuyen);
+      u8g2.setCursor(5, 44); u8g2.print("CORPS BREACHED: "); u8g2.print(corpsHackedCount);
+      u8g2.setCursor(5, 54); u8g2.print("XP: "); u8g2.print(experience); u8g2.print("/"); u8g2.print(xpToNextLevel);
+    }
+    else {
+      // HUD (Left Side)
+      u8g2.setFont(u8g2_font_4x6_tf);
+      u8g2.setCursor(2, 6); u8g2.print("LVL "); u8g2.print(level);
+      u8g2.setCursor(2, 14); u8g2.print("SCR "); u8g2.print(score);
+      u8g2.drawHLine(0, 18, 44);
+      u8g2.drawFrame(2, 22, 40, 4);
+      int xpW = map(experience, 0, xpToNextLevel, 0, 38);
+      u8g2.drawBox(3, 23, xpW, 2);
+      u8g2.setCursor(2, 36); u8g2.print("[UPLINK]");
+      u8g2.setCursor(2, 44); u8g2.print("SPLICING...");
+      u8g2.drawFrame(0, 48, 44, 16);
+      u8g2.setCursor(4, 56); u8g2.print("NEXT BRCH");
+      u8g2.setCursor(4, 62); u8g2.print(nextMilestone);
+
+      // Tetris Grid (Right Side)
+      u8g2.drawFrame(GRID_X_OFFSET-1, GRID_Y_OFFSET-1, (TETRIS_W*CELL_SIZE)+2, (TETRIS_H*CELL_SIZE)+2);
+      for(int x=0; x<TETRIS_W; x++) {
+        for(int y=0; y<TETRIS_H; y++) {
+          if(grid[x][y]) drawBlock(x, y, grid[x][y]);
+        }
+      }
+      
+      // Current Piece
+      uint16_t shape = SHAPES[curType][curRot];
+      for(int i=0; i<4; i++) {
+        for(int j=0; j<4; j++) {
+          if(shape & (1 << (15 - (i * 4 + j)))) {
+            if(curY + i >= 0) drawBlock(curX + j, curY + i, curType + 1);
+          }
+        }
+      }
+    }
+  } while (u8g2.nextPage());
+}
+
+void handleInput() {
+  static unsigned long lastIn = 0;
+  if (millis() - lastIn < 100) return;
+
+  if (digitalRead(BTN_INVERT) == LOW) { isInverted = !isInverted; lastIn = millis(); }
+  if (digitalRead(BTN_STATS) == LOW) { 
+    if(state == PLAYING) state = CYBERDECK; else if(state == CYBERDECK) state = PLAYING;
+    lastIn = millis(); 
+  }
+
+  if (state == TITLE) {
+    if (digitalRead(BTN_ACTION) == LOW) {
+      memset(grid, 0, sizeof(grid)); score = 0; experience = 0; level = 1; spawnPiece();
+      state = PLAYING; playCyberMusic(); lastIn = millis();
+    }
+    return;
+  }
+  
+  if (state == MILESTONE || state == COMMUNICATION) {
+    if (digitalRead(BTN_ACTION) == LOW) { state = PLAYING; lastIn = millis(); }
+    return;
+  }
+
+  if (state == PLAYING) {
+    int stickX = analogRead(STICK_X);
+    int stickY = analogRead(STICK_Y);
+
+    if (stickX < 300) { if(!checkCollision(curX - 1, curY, curRot)) curX--; lastIn = millis(); }
+    if (stickX > 700) { if(!checkCollision(curX + 1, curY, curRot)) curX++; lastIn = millis(); }
+    if (stickY > 700) { if(!checkCollision(curX, curY + 1, curRot)) curY++; lastIn = millis(); } // Soft Drop
+
+    if (digitalRead(BTN_ACTION) == LOW) {
+      int nextRot = (curRot + 1) % 4;
+      if (!checkCollision(curX, curY, nextRot)) curRot = nextRot;
+      else if (!checkCollision(curX - 1, curY, nextRot)) { curX--; curRot = nextRot; } // Wall kick L
+      else if (!checkCollision(curX + 1, curY, nextRot)) { curX++; curRot = nextRot; } // Wall kick R
+      lastIn = millis();
+      tone(BZ_SFX, 400, 10);
+    }
+  }
+}
+
+void setup() {
+  pinMode(BTN_ACTION, INPUT_PULLUP);
+  pinMode(BTN_INVERT, INPUT_PULLUP);
+  pinMode(BTN_STATS,  INPUT_PULLUP);
+  u8g2.begin();
+  randomSeed(analogRead(A2));
+}
+
+void loop() {
+  handleInput();
+
+  if (state == PLAYING) {
+    if (millis() - lastDrop > dropInterval) {
+      if (!checkCollision(curX, curY + 1, curRot)) {
+        curY++;
+      } else {
+        lockPiece();
+        clearLines();
+        spawnPiece();
+      }
+      lastDrop = millis();
+    }
+    
+    if (millis() - msgTimer > 20000) {
+      if (random(0, 100) < 20) {
+        runnerName = RUNNERS[random(0, 8)];
+        runnerMsg = MESSAGES[random(0, 12)];
+        state = COMMUNICATION;
+      }
+      msgTimer = millis();
+    }
+  }
+  else if (state == GAMEOVER) {
+    if (millis() - stateTimer > 3000) state = TITLE;
+  }
+
+  drawGame();
+}

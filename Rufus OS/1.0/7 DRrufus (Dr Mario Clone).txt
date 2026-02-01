@@ -1,0 +1,428 @@
+#include <Arduino.h>
+#include <U8g2lib.h>
+#include <Wire.h>
+
+// Using SH1106 128x64 I2C driver
+U8G2_SH1106_128X64_NONAME_1_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+
+// --- PIN DEFINITIONS ---
+#define STICK_X    A0
+#define STICK_Y    A1
+#define BTN_ROTATE 10 // Rotate Pill
+#define BTN_START  11 // Start / Reset
+#define BZ_SFX     3  // Melody Buzzer
+#define BZ_SFX_2   6  // Harmony Buzzer
+#define BTN_SKIP   9  // Skip Track
+#define BTN_PAUSE  5  // Pause/Play GAME
+#define BTN_INVERT 12 // Negative/Positive Display
+
+// --- GAME CONSTANTS ---
+#define GRID_W 8
+#define GRID_H 14 
+#define OFFSET_X 44 
+#define OFFSET_Y 6
+
+// --- HARMONIZED CLASSICAL MUSIC DATA ---
+// Format: {Melody_Freq, Harmony_Freq, Duration}
+
+// 1. Eine kleine Nachtmusik - Mozart (Gameplay A)
+const int feverMelody[] PROGMEM = {
+  392,196,150, 0,0,50, 294,147,150, 0,0,50, 392,196,150, 0,0,50, 294,147,150, 0,0,50,
+  392,196,150, 294,147,150, 392,196,150, 494,247,150, 587,294,300, 0,0,100,
+  440,220,150, 0,0,50, 294,147,150, 0,0,50, 440,220,150, 0,0,50, 294,147,150, 0,0,50,
+  440,220,150, 330,165,150, 440,220,150, 523,262,150, 587,294,300, 0,0,100,
+  587,294,150, 494,247,150, 440,220,150, 392,196,150, 392,196,150, 370,185,150, 392,196,150, 0,0,50
+};
+
+// 2. Minuet in G - Bach (Gameplay B)
+const int chillMelody[] PROGMEM = {
+  392,196,300, 262,131,150, 294,147,150, 330,165,150, 349,175,150,
+  392,196,300, 262,131,300, 262,131,300,
+  440,220,300, 294,147,150, 330,165,150, 349,175,150, 370,185,150,
+  392,196,300, 262,131,300, 262,131,300,
+  349,175,300, 392,196,150, 349,175,150, 330,165,300,
+  330,165,300, 349,175,150, 330,165,150, 294,147,300,
+  294,147,300, 330,165,150, 294,147,150, 262,131,300,
+  196,98,600
+};
+
+// 3. The Blue Danube - Strauss (Title Screen)
+const int titleMelody[] PROGMEM = {
+  262,131,300, 262,131,300, 330,165,300, 392,196,300, 392,196,300, 
+  523,262,300, 523,262,300, 440,220,300, 440,220,300, 349,175,300,
+  294,147,300, 294,147,300, 262,131,600
+};
+
+const int silentMelody[] PROGMEM = { 0, 0, 1000 };
+
+struct MusicTrack {
+  const int* notes;
+  int length;
+};
+
+const MusicTrack playlist[] = {
+  {feverMelody, 28},  
+  {chillMelody, 23},  
+  {titleMelody, 13},  
+  {silentMelody, 1}   
+};
+
+int currentTrack = 2; // Start with Title
+int melodyIndex = 0;
+unsigned long nextNoteTime = 0;
+bool gamePaused = false;
+bool displayInverted = false;
+
+// Custom Playback for Harmonies
+void playBackgroundMusic() {
+  if (millis() > nextNoteTime) {
+    const int* activeMelody = playlist[currentTrack].notes;
+    int note1 = pgm_read_word(&activeMelody[melodyIndex * 3]);
+    int note2 = pgm_read_word(&activeMelody[melodyIndex * 3 + 1]);
+    int duration = pgm_read_word(&activeMelody[melodyIndex * 3 + 2]);
+    
+    if (note1 > 0) tone(BZ_SFX, note1, duration);
+    else noTone(BZ_SFX);
+    
+    if (note2 > 0) tone(BZ_SFX_2, note2, duration);
+    else noTone(BZ_SFX_2);
+    
+    nextNoteTime = millis() + duration + 25; 
+    melodyIndex++;
+    if (melodyIndex >= playlist[currentTrack].length) melodyIndex = 0; 
+  }
+}
+
+// --- PILL TYPES ---
+enum PillType { EMPTY = 0, TYPE_A = 1, TYPE_B = 2 };
+
+// --- GAME STATE ---
+enum GameState { TITLE, PLAYING, GAMEOVER, LEVELWIN };
+GameState currentState = TITLE;
+
+uint8_t grid[GRID_W][GRID_H];
+int score = 0;
+int level = 1;
+unsigned long lastMove = 0;
+int moveInterval = 800;
+
+struct Pill {
+  int x, y;
+  int typeA, typeB;
+  int rotation; // 0: A-B, 1: A over B, 2: B-A, 3: B over A
+} activePill;
+
+void spawnPill() {
+  activePill.x = GRID_W / 2 - 1;
+  activePill.y = 0;
+  activePill.typeA = random(1, 3); 
+  activePill.typeB = random(1, 3);
+  activePill.rotation = 0;
+  
+  if(grid[activePill.x][activePill.y] != EMPTY || grid[activePill.x+1][activePill.y] != EMPTY) {
+    currentState = GAMEOVER;
+  }
+}
+
+void initGame() {
+  score = 0;
+  gamePaused = false;
+  moveInterval = 850 - (level * 50);
+  if (moveInterval < 150) moveInterval = 150;
+  
+  for(int x=0; x<GRID_W; x++)
+    for(int y=0; y<GRID_H; y++) grid[x][y] = EMPTY;
+
+  int virusTarget = 4 + (level * 2);
+  int placed = 0;
+  while(placed < virusTarget) {
+    int vx = random(0, GRID_W);
+    int vy = random(GRID_H/2, GRID_H);
+    if(grid[vx][vy] == EMPTY) {
+      grid[vx][vy] = random(1, 3) | 0x80; 
+      placed++;
+    }
+  }
+  
+  spawnPill();
+  currentState = PLAYING;
+}
+
+void applyGravity() {
+  bool moved;
+  do {
+    moved = false;
+    for(int x=0; x<GRID_W; x++) {
+      for(int y=GRID_H-2; y>=0; y--) {
+        if(grid[x][y] != EMPTY && !(grid[x][y] & 0x80) && grid[x][y+1] == EMPTY) {
+          grid[x][y+1] = grid[x][y];
+          grid[x][y] = EMPTY;
+          moved = true;
+        }
+      }
+    }
+  } while (moved);
+}
+
+void checkMatches() {
+  bool toRemove[GRID_W][GRID_H];
+  for(int i=0; i<GRID_W; i++) for(int j=0; j<GRID_H; j++) toRemove[i][j] = false;
+  bool found = false;
+
+  for(int y=0; y<GRID_H; y++) {
+    for(int x=0; x<GRID_W-3; x++) {
+      uint8_t t1 = grid[x][y] & 0x07;
+      if(t1 != EMPTY && (grid[x+1][y]&0x07) == t1 && (grid[x+2][y]&0x07) == t1 && (grid[x+3][y]&0x07) == t1) {
+        for(int k=0; k<4; k++) toRemove[x+k][y] = true;
+        found = true;
+      }
+    }
+  }
+
+  for(int x=0; x<GRID_W; x++) {
+    for(int y=0; y<GRID_H-3; y++) {
+      uint8_t t1 = grid[x][y] & 0x07;
+      if(t1 != EMPTY && (grid[x][y+1]&0x07) == t1 && (grid[x][y+2]&0x07) == t1 && (grid[x][y+3]&0x07) == t1) {
+        for(int k=0; k<4; k++) toRemove[x][y+k] = true;
+        found = true;
+      }
+    }
+  }
+
+  if(found) {
+    tone(BZ_SFX, 1800, 80);
+    for(int x=0; x<GRID_W; x++) {
+      for(int y=0; y<GRID_H; y++) {
+        if(toRemove[x][y]) {
+          grid[x][y] = EMPTY;
+          score += 20;
+        }
+      }
+    }
+    applyGravity();
+    checkMatches(); 
+  }
+}
+
+void drawCell(int x, int y, uint8_t cellValue) {
+  int sx = OFFSET_X + (x * 5); 
+  int sy = OFFSET_Y + (y * 4); 
+  uint8_t type = cellValue & 0x07;
+  bool isVirus = cellValue & 0x80;
+
+  if (isVirus) {
+    if (type == TYPE_A) {
+       u8g2.drawPixel(sx, sy); u8g2.drawPixel(sx+4, sy);
+       u8g2.drawPixel(sx+1, sy+1); u8g2.drawPixel(sx+3, sy+1);
+       u8g2.drawPixel(sx+2, sy+2);
+    } else {
+       u8g2.drawPixel(sx, sy); u8g2.drawPixel(sx+4, sy);
+       u8g2.drawPixel(sx+2, sy+2);
+    }
+  } else {
+    if (type == TYPE_A) u8g2.drawBox(sx, sy, 4, 3);
+    else if (type == TYPE_B) u8g2.drawFrame(sx, sy, 4, 3);
+  }
+}
+
+void drawGame() {
+  u8g2.firstPage();
+  do {
+    if (currentState == TITLE) {
+      u8g2.setFont(u8g2_font_logisoso16_tr);
+      u8g2.drawStr(15, 30, "DR. RUFUS");
+      u8g2.setFont(u8g2_font_6x10_tf);
+      u8g2.drawStr(25, 50, "CLASSICAL CLINIC");
+      if ((millis() / 500) % 2 == 0) u8g2.drawStr(20, 62, "PRESS BTN 11 START");
+    } 
+    else {
+      u8g2.drawFrame(OFFSET_X - 2, OFFSET_Y - 2, (GRID_W * 5) + 3, (GRID_H * 4) + 3);
+      u8g2.drawBox(OFFSET_X + 12, OFFSET_Y - 5, 12, 3);
+      
+      for(int x=0; x<GRID_W; x++) 
+        for(int y=0; y<GRID_H; y++) 
+          if(grid[x][y] != EMPTY) drawCell(x, y, grid[x][y]);
+      
+      if(currentState == PLAYING) {
+        int x2 = activePill.x, y2 = activePill.y;
+        if(activePill.rotation == 0) x2++; 
+        else if(activePill.rotation == 1) y2++;
+        else if(activePill.rotation == 2) x2++; 
+        else if(activePill.rotation == 3) y2++;
+
+        uint8_t drawA = (activePill.rotation < 2) ? activePill.typeA : activePill.typeB;
+        uint8_t drawB = (activePill.rotation < 2) ? activePill.typeB : activePill.typeA;
+        
+        drawCell(activePill.x, activePill.y, drawA);
+        drawCell(x2, y2, drawB);
+      }
+
+      u8g2.setFont(u8g2_font_5x7_tf);
+      u8g2.setCursor(2, 20); u8g2.print("SCORE");
+      u8g2.setCursor(2, 30); u8g2.print(score);
+      u8g2.setCursor(2, 45); u8g2.print("LEVEL");
+      u8g2.setCursor(2, 55); u8g2.print(level);
+      
+      if(gamePaused) {
+        u8g2.drawBox(30, 20, 68, 20);
+        u8g2.setDrawColor(0);
+        u8g2.drawStr(45, 32, "-PAUSED-");
+        u8g2.setDrawColor(1);
+      } else if(currentState == GAMEOVER) {
+        u8g2.drawBox(30, 20, 68, 20);
+        u8g2.setDrawColor(0);
+        u8g2.drawStr(40, 32, "GAME OVER");
+        u8g2.setDrawColor(1);
+      } else if(currentState == LEVELWIN) {
+        u8g2.drawBox(30, 20, 68, 20);
+        u8g2.setDrawColor(0);
+        u8g2.drawStr(40, 32, "LEVEL UP!");
+        u8g2.setDrawColor(1);
+      }
+    }
+  } while (u8g2.nextPage());
+}
+
+void rotatePill() {
+  int nextRot = (activePill.rotation + 1) % 4;
+  bool canRotate = true;
+
+  if (nextRot == 1 || nextRot == 3) { 
+    if (activePill.y + 1 >= GRID_H || grid[activePill.x][activePill.y + 1] != EMPTY) canRotate = false;
+  } else { 
+    if (activePill.x + 1 >= GRID_W || grid[activePill.x + 1][activePill.y] != EMPTY) canRotate = false;
+  }
+
+  if (canRotate) {
+    activePill.rotation = nextRot;
+    tone(BZ_SFX, 1200, 10);
+  }
+}
+
+void handleSystemInput() {
+  static unsigned long lastSysInput = 0;
+  if (millis() - lastSysInput < 250) return;
+
+  if (digitalRead(BTN_SKIP) == LOW) {
+    currentTrack = (currentTrack + 1) % 4;
+    melodyIndex = 0;
+    noTone(BZ_SFX); noTone(BZ_SFX_2);
+    lastSysInput = millis();
+  }
+
+  if (digitalRead(BTN_PAUSE) == LOW) {
+    gamePaused = !gamePaused;
+    lastSysInput = millis();
+  }
+
+  if (digitalRead(BTN_INVERT) == LOW) {
+    displayInverted = !displayInverted;
+    u8g2.sendF("c", displayInverted ? 0xA7 : 0xA6); 
+    lastSysInput = millis();
+  }
+}
+
+void updateGame() {
+  if (gamePaused) return; 
+
+  static unsigned long lastInput = 0;
+  int ax = analogRead(STICK_X);
+  int ay = analogRead(STICK_Y);
+
+  if(millis() - lastInput > 150) {
+    if(ax < 300 && activePill.x > 0) { 
+      bool blocked = false;
+      bool isVert = (activePill.rotation % 2 != 0);
+      if(isVert) {
+        if(grid[activePill.x-1][activePill.y] != EMPTY || grid[activePill.x-1][activePill.y+1] != EMPTY) blocked = true;
+      } else {
+        if(grid[activePill.x-1][activePill.y] != EMPTY) blocked = true;
+      }
+      if(!blocked) { activePill.x--; lastInput = millis(); }
+    }
+    if(ax > 700) {
+      bool isVert = (activePill.rotation % 2 != 0);
+      int limit = isVert ? GRID_W-1 : GRID_W-2;
+      if(activePill.x < limit) {
+        bool blocked = false;
+        if(isVert) {
+          if(grid[activePill.x+1][activePill.y] != EMPTY || grid[activePill.x+1][activePill.y+1] != EMPTY) blocked = true;
+        } else {
+          if(grid[activePill.x+2][activePill.y] != EMPTY) blocked = true;
+        }
+        if(!blocked) { activePill.x++; lastInput = millis(); }
+      }
+    }
+    if(digitalRead(BTN_ROTATE) == LOW) { rotatePill(); lastInput = millis(); }
+  }
+
+  int curInt = (ay > 700) ? 50 : moveInterval; 
+  if(millis() - lastMove > curInt) {
+    bool canDrop = true;
+    bool isVert = (activePill.rotation % 2 != 0);
+    if(isVert) {
+      if(activePill.y + 2 >= GRID_H || grid[activePill.x][activePill.y + 2] != EMPTY) canDrop = false;
+    } else {
+      if(activePill.y + 1 >= GRID_H || grid[activePill.x][activePill.y + 1] != EMPTY || grid[activePill.x + 1][activePill.y + 1] != EMPTY) canDrop = false;
+    }
+
+    if(canDrop) {
+      activePill.y++;
+    } else {
+      uint8_t lockA = (activePill.rotation < 2) ? activePill.typeA : activePill.typeB;
+      uint8_t lockB = (activePill.rotation < 2) ? activePill.typeB : activePill.typeA;
+      grid[activePill.x][activePill.y] = lockA;
+      if(isVert) grid[activePill.x][activePill.y+1] = lockB;
+      else grid[activePill.x+1][activePill.y] = lockB;
+      
+      checkMatches();
+      
+      int vCount = 0;
+      for(int x=0; x<GRID_W; x++) for(int y=0; y<GRID_H; y++) if(grid[x][y] & 0x80) vCount++;
+      
+      if(vCount == 0) {
+        currentState = LEVELWIN;
+        currentTrack = (currentTrack + 1) % 2; 
+        melodyIndex = 0;
+      } else {
+        spawnPill();
+      }
+    }
+    lastMove = millis();
+  }
+}
+
+void setup() {
+  pinMode(BTN_ROTATE, INPUT_PULLUP);
+  pinMode(BTN_START, INPUT_PULLUP);
+  pinMode(BTN_SKIP, INPUT_PULLUP);
+  pinMode(BTN_PAUSE, INPUT_PULLUP);
+  pinMode(BTN_INVERT, INPUT_PULLUP);
+  pinMode(BZ_SFX, OUTPUT);
+  pinMode(BZ_SFX_2, OUTPUT);
+  u8g2.begin();
+  randomSeed(analogRead(A2));
+}
+
+void loop() {
+  handleSystemInput();
+  
+  if (currentState == TITLE) {
+    currentTrack = 2; 
+    playBackgroundMusic();
+    if (digitalRead(BTN_START) == LOW) initGame();
+  } else {
+    playBackgroundMusic();
+    if (currentState == PLAYING) {
+      updateGame();
+    } else if (currentState == LEVELWIN) {
+      if (digitalRead(BTN_START) == LOW) {
+        level++;
+        initGame();
+      }
+    } else if (currentState == GAMEOVER) {
+      if (digitalRead(BTN_START) == LOW) currentState = TITLE;
+    }
+  }
+  drawGame();
+}

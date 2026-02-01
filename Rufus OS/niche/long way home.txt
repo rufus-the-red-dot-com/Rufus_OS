@@ -1,0 +1,233 @@
+/*
+ * PROJECT: THE LONG VOYAGE: DEEP STASIS v1.2
+ * HARDWARE: Arduino Nano + SH1106 OLED + DS3231 RTC
+ * INPUT: 3-Probe Layout (D11:A, D10:B, D9:C)
+ * ---------------------------------------------------
+ * - TIMELINE: 6 Months real-time voyage (Persistent).
+ * - VARIETY: 1,000 unique procedural events (PROGMEM).
+ * - STATS: Manage Hull, O2, and Crew (0-100).
+ * - INPUT: A/C to select, 3-second hold on B to confirm.
+ * - MEMORY: Optimized for Nano (No Strings, F-Macros).
+ */
+
+#include <Arduino.h>
+#include <U8g2lib.h>
+#include <Wire.h>
+#include <RTClib.h>
+#include <EEPROM.h>
+
+U8G2_SH1106_128X64_NONAME_1_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+RTC_DS3231 rtc;
+
+// --- PINOUT ---
+#define PIN_A 11  // Option A (Left)
+#define PIN_B 10  // Confirm (Middle) - 3S HOLD
+#define PIN_C 9   // Option C (Right)
+#define BZ 3
+
+// --- PROCEDURAL WORD BANK (Stored in Flash) ---
+const char s0[] PROGMEM = "LIFE SUPPORT"; const char s1[] PROGMEM = "STASIS PODS";
+const char s2[] PROGMEM = "HULL PLATING"; const char s3[] PROGMEM = "REACTOR CORE";
+const char s4[] PROGMEM = "O2 SCRUBBERS"; const char s5[] PROGMEM = "COMMS ARRAY";
+const char s6[] PROGMEM = "NAV-COMPUTER"; const char s7[] PROGMEM = "FUEL MANIFOLD";
+const char s8[] PROGMEM = "CRYO-STORAGE"; const char s9[] PROGMEM = "SHIELD GRID";
+const char* const SUBJECTS[] PROGMEM = {s0, s1, s2, s3, s4, s5, s6, s7, s8, s9};
+
+const char v0[] PROGMEM = "CRITICAL LEAK"; const char v1[] PROGMEM = "SEVERE DECAY";
+const char v2[] PROGMEM = "UNSTABLE SYNC"; const char v3[] PROGMEM = "TOTAL RUPTURE";
+const char v4[] PROGMEM = "VOLTAGE SPIKE"; const char v5[] PROGMEM = "THERMAL BLOOM";
+const char v6[] PROGMEM = "PRESSURE DROP"; const char v7[] PROGMEM = "SIGNAL NOISE";
+const char v8[] PROGMEM = "LOGIC LOOP";    const char v9[] PROGMEM = "CORRUPTION";
+const char* const CRISES[] PROGMEM = {v0, v1, v2, v3, v4, v5, v6, v7, v8, v9};
+
+const char c0[] PROGMEM = "SOLAR FLARE";   const char c1[] PROGMEM = "DEEP VOID";
+const char c2[] PROGMEM = "MICRO-METEOR";  const char c3[] PROGMEM = "AI GLITCH";
+const char c4[] PROGMEM = "ION STORM";     const char c5[] PROGMEM = "EXHAUSTION";
+const char c6[] PROGMEM = "VACUUM DECAY";  const char c7[] PROGMEM = "GRAVITY WELL";
+const char c8[] PROGMEM = "NEBULA GAS";    const char c9[] PROGMEM = "SENSOR GHOST";
+const char* const CAUSES[] PROGMEM = {c0, c1, c2, c3, c4, c5, c6, c7, c8, c9};
+
+struct VoyageSave {
+  uint32_t magic;
+  uint32_t startTS;      // Mission Start
+  uint32_t nextEventTS;  // When the next crisis hits
+  int hull, o2, crew;    // Vitals
+  bool eventActive;
+  int curSub, curCri, curCau; 
+} save;
+
+enum Mode { BRIDGE, LOGS, EVENT, GAMEOVER, SUCCESS };
+Mode mode = BRIDGE;
+
+// Globals
+DateTime now;
+unsigned long holdTimer = 0;
+bool bB_locked = false;
+char textBuffer[20];
+
+// --- UTILS ---
+void playTone(int f, int d) { tone(BZ, f, d); delay(d/1.2); }
+void saveGame() { EEPROM.put(0, save); }
+
+void generateNewEvent() {
+  save.curSub = random(0, 10);
+  save.curCri = random(0, 10);
+  save.curCau = random(0, 10);
+  // Next event in 6 hours to 2 days
+  save.nextEventTS = now.unixtime() + random(21600, 172800);
+  save.eventActive = true;
+  saveGame();
+}
+
+void resetVoyage() {
+  save.magic = 0x600F;
+  save.startTS = rtc.now().unixtime();
+  save.hull = 100; save.o2 = 100; save.crew = 100;
+  save.eventActive = false;
+  generateNewEvent();
+  saveGame();
+  mode = BRIDGE;
+  playTone(200, 500);
+}
+
+void loadVoyage() {
+  EEPROM.get(0, save);
+  if (save.magic != 0x600F) resetVoyage();
+}
+
+// --- INPUT HANDLER ---
+void handleInput() {
+  bool bA = (digitalRead(PIN_A) == LOW);
+  bool bB_phys = (digitalRead(PIN_B) == LOW);
+  bool bC = (digitalRead(PIN_C) == LOW);
+
+  if (!bB_phys) bB_locked = false;
+  bool bB = (bB_phys && !bB_locked);
+
+  if (mode == BRIDGE) {
+    if (bA) { mode = LOGS; playTone(600, 20); delay(200); }
+    if (save.eventActive && bB) { mode = EVENT; bB_locked = true; playTone(800, 50); }
+  } 
+  else if (mode == LOGS) {
+    if (bC) { mode = BRIDGE; playTone(400, 20); delay(200); }
+    // Hidden hard reset: Hold A+C in logs
+    if (bA && bC) { delay(2000); if(digitalRead(PIN_A)==LOW) resetVoyage(); }
+  }
+  else if (mode == EVENT) {
+    // Decision Logic: Requires 3 second hold on B
+    if (bB_phys) {
+      if (holdTimer == 0) holdTimer = millis();
+      if (millis() - holdTimer > 3000) {
+        // Option A: PATCH (Favors Hull, Costs O2)
+        if (digitalRead(PIN_A) == LOW) {
+            save.hull = min(100, save.hull + random(2, 6));
+            save.o2 -= random(8, 15);
+            playTone(1200, 200);
+        } 
+        // Option C: VENT (Favors O2, Costs Crew)
+        else if (digitalRead(PIN_C) == LOW) {
+            save.o2 = min(100, save.o2 + random(2, 6));
+            save.crew -= random(5, 12);
+            playTone(1500, 200);
+        }
+        // Neutral B (Just acknowledge, costs both slightly)
+        else {
+            save.hull -= 5; save.o2 -= 5;
+            playTone(400, 200);
+        }
+        
+        save.eventActive = false;
+        generateNewEvent();
+        mode = BRIDGE;
+        holdTimer = 0; bB_locked = true;
+      }
+    } else { holdTimer = 0; }
+  }
+}
+
+void setup() {
+  Wire.begin(); u8g2.begin(); rtc.begin();
+  pinMode(PIN_A, INPUT_PULLUP); pinMode(PIN_B, INPUT_PULLUP); pinMode(PIN_C, INPUT_PULLUP);
+  loadVoyage();
+}
+
+void loop() {
+  now = rtc.now();
+  handleInput();
+
+  // Arrival Logic (6 Months = 15,552,000 seconds)
+  uint32_t voyageDuration = 15552000; 
+  uint32_t elapsed = now.unixtime() - save.startTS;
+  
+  if (!save.eventActive && now.unixtime() >= save.nextEventTS) {
+      save.eventActive = true;
+      playTone(1800, 100);
+  }
+
+  // Check Death / Success
+  if (save.hull <= 0 || save.o2 <= 0 || save.crew <= 0) mode = GAMEOVER;
+  if (elapsed >= voyageDuration) mode = SUCCESS;
+
+  u8g2.firstPage();
+  do {
+    u8g2.setFont(u8g2_font_u8glib_4_tf);
+    
+    // HUD: Percentage | Hull | O2 | Crew
+    float prg = ((float)elapsed / voyageDuration) * 100.0;
+    u8g2.setCursor(0, 6); u8g2.print(F("VOYAGE:")); u8g2.print(prg, 2); u8g2.print(F("%"));
+    u8g2.setCursor(65, 6); u8g2.print(F("H:")); u8g2.print(save.hull);
+    u8g2.print(F(" O:")); u8g2.print(save.o2);
+    u8g2.print(F(" C:")); u8g2.print(save.crew);
+    u8g2.drawHLine(0, 8, 128);
+
+    switch(mode) {
+      case BRIDGE:
+        u8g2.drawStr(35, 25, "BRIDGE OFFLINE");
+        u8g2.drawStr(30, 35, "STASIS MODE: ON");
+        u8g2.drawStr(10, 55, "A: ACCESS LOGS");
+        if (save.eventActive) {
+          u8g2.drawRBox(80, 45, 45, 16, 2); u8g2.setDrawColor(0);
+          u8g2.drawStr(85, 56, "(!) ALERT"); u8g2.setDrawColor(1);
+        }
+        break;
+
+      case LOGS:
+        u8g2.drawStr(10, 20, "-- MISSION STATUS --");
+        u8g2.setCursor(10, 35); u8g2.print(F("DAY: ")); u8g2.print(elapsed / 86400);
+        u8g2.setCursor(10, 45); u8g2.print(F("RTC: ")); 
+        u8g2.print(now.hour()); u8g2.print(":"); 
+        if(now.minute() < 10) u8g2.print("0"); u8g2.print(now.minute());
+        u8g2.drawStr(10, 62, "C: RETURN TO BRIDGE");
+        break;
+
+      case EVENT:
+        u8g2.drawStr(5, 18, "[ PRIORITY ALERT ]");
+        u8g2.setCursor(10, 30);
+        strcpy_P(textBuffer, (char*)pgm_read_ptr(&(SUBJECTS[save.curSub]))); u8g2.print(textBuffer);
+        u8g2.setCursor(10, 40);
+        strcpy_P(textBuffer, (char*)pgm_read_ptr(&(CRISES[save.curCri]))); u8g2.print(textBuffer);
+        u8g2.setCursor(10, 50); u8g2.print(F("CAUSE: "));
+        strcpy_P(textBuffer, (char*)pgm_read_ptr(&(CAUSES[save.curCau]))); u8g2.print(textBuffer);
+
+        if (holdTimer != 0) {
+          u8g2.drawFrame(0, 58, 128, 6);
+          u8g2.drawBox(0, 58, (millis() - holdTimer) / 23, 6);
+          u8g2.setCursor(45, 55); u8g2.print(F("CONFIRMING..."));
+        } else {
+          u8g2.drawStr(5, 63, "A:PATCH  C:VENT  (HLD B:OK)");
+        }
+        break;
+
+      case GAMEOVER:
+        u8g2.drawStr(30, 35, "MISSION ABORTED");
+        u8g2.drawStr(25, 45, "CREW LOST TO DEEP SPACE");
+        u8g2.drawStr(30, 60, "HOLD A+C TO REBOOT");
+        break;
+
+      case SUCCESS:
+        u8g2.drawStr(30, 35, "ARRIVAL SUCCESS");
+        u8g2.drawStr(20, 45, "STATION GATES OPENED.");
+        break;
+    }
+  } while (u8g2.nextPage());
+}

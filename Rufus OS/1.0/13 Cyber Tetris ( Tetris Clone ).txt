@@ -1,0 +1,296 @@
+#include <Arduino.h>
+#include <U8g2lib.h>
+#include <Wire.h>
+
+// SH1106 128x64 I2C
+U8G2_SH1106_128X64_NONAME_1_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+
+// --- PIN DEFINITIONS ---
+#define STICK_X    A0
+#define STICK_Y    A1
+#define BTN_PAUSE  2  
+#define BTN_ROT_L  11 
+#define BTN_ROT_R  9  
+#define BTN_HARD   10 
+#define BZ_SFX     3  
+
+// --- GAME CONSTANTS ---
+#define BOARD_W    10
+#define BOARD_H    20
+#define BLOCK_SIZE 3
+#define BOARD_X    49 // Centered
+#define BOARD_Y    2
+
+// --- TETROMINO DATA ---
+const uint16_t shapes[7][4] = {
+  {0x0F00, 0x2222, 0x00F0, 0x4444}, // I
+  {0x44C0, 0x8E00, 0x6440, 0x0E20}, // J
+  {0x4460, 0x0E80, 0xC440, 0x2E00}, // L
+  {0xCC00, 0xCC00, 0xCC00, 0xCC00}, // O
+  {0x06C0, 0x4620, 0x06C0, 0x4620}, // S
+  {0x0E40, 0x4C40, 0x4E00, 0x4640}, // T
+  {0x0C60, 0x2640, 0x0C60, 0x2640}  // Z
+};
+
+// --- GAME STATE ---
+enum State { TITLE, PLAYING, PAUSED, GAMEOVER };
+State gameState = TITLE;
+
+uint8_t board[BOARD_H][BOARD_W];
+int curX, curY, curType, curRot;
+int nextType;
+long score = 0;
+int linesCleared = 0;
+int level = 1;
+
+unsigned long lastDrop = 0;
+unsigned long lastMove = 0;
+unsigned long dropInterval = 800;
+
+// --- AUDIO ---
+void playTone(int freq, int dur) {
+  tone(BZ_SFX, freq, dur);
+}
+
+// --- LOGIC ---
+bool checkCollision(int x, int y, int r) {
+  uint16_t shape = shapes[curType][r];
+  for (int i = 0; i < 4; i++) {
+    for (int j = 0; j < 4; j++) {
+      if (shape & (1 << (15 - (i * 4 + j)))) {
+        int nx = x + j;
+        int ny = y + i;
+        if (nx < 0 || nx >= BOARD_W || ny >= BOARD_H) return true;
+        if (ny >= 0 && board[ny][nx]) return true;
+      }
+    }
+  }
+  return false;
+}
+
+void lockPiece() {
+  uint16_t shape = shapes[curType][curRot];
+  for (int i = 0; i < 4; i++) {
+    for (int j = 0; j < 4; j++) {
+      if (shape & (1 << (15 - (i * 4 + j)))) {
+        int ny = curY + i;
+        if (ny >= 0) board[ny][curX + j] = 1;
+      }
+    }
+  }
+}
+
+void clearLines() {
+  int clearedThisTurn = 0;
+  for (int i = BOARD_H - 1; i >= 0; i--) {
+    bool full = true;
+    for (int j = 0; j < BOARD_W; j++) {
+      if (!board[i][j]) { full = false; break; }
+    }
+    if (full) {
+      clearedThisTurn++;
+      for (int k = i; k > 0; k--) {
+        for (int j = 0; j < BOARD_W; j++) board[k][j] = board[k - 1][j];
+      }
+      for (int j = 0; j < BOARD_W; j++) board[0][j] = 0;
+      i++;
+    }
+  }
+  if (clearedThisTurn > 0) {
+    int points[] = {0, 100, 300, 500, 800};
+    score += points[clearedThisTurn] * level;
+    linesCleared += clearedThisTurn;
+    level = (linesCleared / 10) + 1;
+    dropInterval = max(100UL, 800 - (level * 50UL));
+    playTone(880, 100);
+  }
+}
+
+void spawnPiece() {
+  curType = nextType;
+  nextType = random(0, 7);
+  curX = BOARD_W / 2 - 2;
+  curY = 0;
+  curRot = 0;
+  if (checkCollision(curX, curY, curRot)) {
+    gameState = GAMEOVER;
+    playTone(200, 500);
+  }
+}
+
+void resetGame() {
+  memset(board, 0, sizeof(board));
+  score = 0;
+  level = 1;
+  linesCleared = 0;
+  dropInterval = 800;
+  nextType = random(0, 7);
+  spawnPiece();
+  gameState = PLAYING;
+}
+
+void handleInput() {
+  int jX = analogRead(STICK_X);
+  int jY = analogRead(STICK_Y);
+
+  if (gameState == TITLE || gameState == GAMEOVER) {
+    if (digitalRead(BTN_ROT_L) == LOW || digitalRead(BTN_ROT_R) == LOW) resetGame();
+    return;
+  }
+
+  if (gameState == PLAYING) {
+    // Left/Right Move
+    if (millis() - lastMove > 150) {
+      if (jX < 300 && !checkCollision(curX - 1, curY, curRot)) { curX--; lastMove = millis(); }
+      if (jX > 700 && !checkCollision(curX + 1, curY, curRot)) { curX++; lastMove = millis(); }
+      if (jY > 700 && !checkCollision(curX, curY + 1, curRot)) { curY++; lastMove = millis(); }
+    }
+
+    // Rotations
+    static bool rl = false, rr = false;
+    if (digitalRead(BTN_ROT_L) == LOW) {
+      if (!rl) {
+        int nextRot = (curRot + 3) % 4;
+        if (!checkCollision(curX, curY, nextRot)) curRot = nextRot;
+        rl = true;
+      }
+    } else rl = false;
+
+    if (digitalRead(BTN_ROT_R) == LOW) {
+      if (!rr) {
+        int nextRot = (curRot + 1) % 4;
+        if (!checkCollision(curX, curY, nextRot)) curRot = nextRot;
+        rr = true;
+      }
+    } else rr = false;
+
+    // Hard Drop
+    static bool rh = false;
+    if (digitalRead(BTN_HARD) == LOW) {
+      if (!rh) {
+        while (!checkCollision(curX, curY + 1, curRot)) curY++;
+        lockPiece();
+        clearLines();
+        spawnPiece();
+        playTone(440, 20);
+        rh = true;
+      }
+    } else rh = false;
+
+    // Gravity
+    if (millis() - lastDrop > dropInterval) {
+      if (!checkCollision(curX, curY + 1, curRot)) {
+        curY++;
+      } else {
+        lockPiece();
+        clearLines();
+        spawnPiece();
+      }
+      lastDrop = millis();
+    }
+  }
+
+  // Pause
+  static bool rp = false;
+  if (digitalRead(BTN_PAUSE) == LOW) {
+    if (!rp) {
+      if (gameState == PLAYING) gameState = PAUSED;
+      else if (gameState == PAUSED) gameState = PLAYING;
+      rp = true;
+    }
+  } else rp = false;
+}
+
+// --- RENDER ---
+void drawBlock(int x, int y, bool ghost = false) {
+  int sx = BOARD_X + x * BLOCK_SIZE;
+  int sy = BOARD_Y + y * BLOCK_SIZE;
+  if (ghost) {
+    u8g2.drawPixel(sx, sy);
+    u8g2.drawPixel(sx+2, sy);
+    u8g2.drawPixel(sx, sy+2);
+    u8g2.drawPixel(sx+2, sy+2);
+  } else {
+    u8g2.drawBox(sx, sy, BLOCK_SIZE - 1, BLOCK_SIZE - 1);
+  }
+}
+
+void render() {
+  u8g2.firstPage();
+  do {
+    if (gameState == TITLE) {
+      u8g2.setFont(u8g2_font_logisoso16_tr);
+      u8g2.drawStr(15, 30, "CYBER");
+      u8g2.drawStr(15, 50, "TETRIS");
+      u8g2.setFont(u8g2_font_4x6_tf);
+      u8g2.drawStr(25, 60, "PRESS BUTTON TO START");
+    } 
+    else {
+      // Draw Board Frame
+      u8g2.drawFrame(BOARD_X - 1, BOARD_Y - 1, BOARD_W * BLOCK_SIZE + 1, BOARD_H * BLOCK_SIZE + 1);
+
+      // Draw Board Content
+      for (int i = 0; i < BOARD_H; i++) {
+        for (int j = 0; j < BOARD_W; j++) {
+          if (board[i][j]) drawBlock(j, i);
+        }
+      }
+
+      // Draw Ghost Piece
+      int gy = curY;
+      while (!checkCollision(curX, gy + 1, curRot)) gy++;
+      uint16_t shape = shapes[curType][curRot];
+      for (int i = 0; i < 4; i++) {
+        for (int j = 0; j < 4; j++) {
+          if (shape & (1 << (15 - (i * 4 + j)))) drawBlock(curX + j, gy + i, true);
+        }
+      }
+
+      // Draw Current Piece
+      for (int i = 0; i < 4; i++) {
+        for (int j = 0; j < 4; j++) {
+          if (shape & (1 << (15 - (i * 4 + j)))) drawBlock(curX + j, curY + i);
+        }
+      }
+
+      // HUD
+      u8g2.setFont(u8g2_font_4x6_tf);
+      u8g2.setCursor(2, 10); u8g2.print("SCORE");
+      u8g2.setCursor(2, 18); u8g2.print(score);
+      u8g2.setCursor(2, 30); u8g2.print("LVL");
+      u8g2.setCursor(2, 38); u8g2.print(level);
+
+      // Next Piece
+      u8g2.drawStr(95, 10, "NEXT");
+      uint16_t nextShape = shapes[nextType][0];
+      for (int i = 0; i < 4; i++) {
+        for (int j = 0; j < 4; j++) {
+          if (nextShape & (1 << (15 - (i * 4 + j)))) {
+            u8g2.drawBox(95 + j * 3, 15 + i * 3, 2, 2);
+          }
+        }
+      }
+
+      if (gameState == PAUSED) u8g2.drawStr(5, 55, "PAUSED");
+      if (gameState == GAMEOVER) {
+        u8g2.setDrawColor(0); u8g2.drawBox(35, 20, 58, 20); u8g2.setDrawColor(1);
+        u8g2.drawFrame(35, 20, 58, 20);
+        u8g2.drawStr(40, 32, "SYSTEM CRASH");
+      }
+    }
+  } while (u8g2.nextPage());
+}
+
+void setup() {
+  pinMode(BTN_ROT_L, INPUT_PULLUP);
+  pinMode(BTN_ROT_R, INPUT_PULLUP);
+  pinMode(BTN_HARD,  INPUT_PULLUP);
+  pinMode(BTN_PAUSE, INPUT_PULLUP);
+  u8g2.begin();
+  randomSeed(analogRead(A2));
+}
+
+void loop() {
+  handleInput();
+  render();
+}

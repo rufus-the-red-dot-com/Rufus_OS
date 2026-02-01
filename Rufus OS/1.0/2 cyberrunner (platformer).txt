@@ -1,0 +1,126 @@
+#include <Arduino.h>
+#include <U8g2lib.h>
+#include <Wire.h>
+#include <EEPROM.h>
+
+U8G2_SH1106_128X64_NONAME_1_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+
+// --- HARDWARE ---
+#define BZ_MEL     3   
+#define BZ_BASS    6   
+#define PIN_JUMP   10 // TOP
+#define PIN_MENU   5  // BOTTOM (HOLD FOR STATS)
+#define PIN_DASH   9  // RIGHT
+#define PIN_FIRE   11 // LEFT (ACTION)
+#define STICK_SW   2  // PAUSE
+#define STICK_X    A0 
+
+// --- RPG DATA ---
+struct Player {
+  float x, y, vy;
+  int hp, lv, xp, nextXp;
+  int str, agi, tec; // STATS
+  bool jumping, paused, dead, inMenu;
+  int dir;
+};
+
+Player p = {30, 46, 0, 100, 1, 0, 100, 5, 5, 8, false, false, false, false, 1};
+struct Enemy { float x, y; int hp; bool active; };
+Enemy bot = {160, 45, 20, false};
+long worldX = 0;
+
+// --- AUDIO ---
+const int bassLoop[16] = {30, 0, 30, 0, 35, 0, 35, 0, 25, 0, 25, 0, 30, 30, 0, 0};
+const int melLoop[12] = {440, 523, 659, 0, 587, 0, 440, 523, 880, 783, 0, 0};
+unsigned long lastBeat = 0; int bStep = 0, mStep = 0;
+
+void setup() {
+  pinMode(BZ_MEL, OUTPUT); pinMode(BZ_BASS, OUTPUT);
+  pinMode(PIN_JUMP, INPUT_PULLUP); pinMode(PIN_MENU, INPUT_PULLUP);
+  pinMode(PIN_DASH, INPUT_PULLUP); pinMode(PIN_FIRE, INPUT_PULLUP);
+  pinMode(STICK_SW, INPUT_PULLUP);
+  u8g2.begin();
+}
+
+void playMusic() {
+  if (p.paused || p.dead || p.inMenu) { noTone(BZ_MEL); return; }
+  if(millis() - lastBeat > 140) {
+    if(bassLoop[bStep] > 0) { for(int i=0; i<8; i++) { digitalWrite(BZ_BASS, HIGH); delayMicroseconds(10000/bassLoop[bStep]); digitalWrite(BZ_BASS, LOW); delayMicroseconds(10000/bassLoop[bStep]); } }
+    if(melLoop[mStep] > 0) tone(BZ_MEL, melLoop[mStep], 50);
+    bStep = (bStep + 1) % 16; mStep = (mStep + 1) % 12; lastBeat = millis();
+  }
+}
+
+void drawMenu() {
+  u8g2.drawFrame(5, 5, 118, 54);
+  u8g2.setFont(u8g2_font_6x12_tf);
+  u8g2.drawStr(12, 18, "NEURAL_LINK_v4.2");
+  u8g2.drawHLine(5, 22, 118);
+  u8g2.setFont(u8g2_font_u8glib_4_tf);
+  u8g2.setCursor(12, 35); u8g2.print("STR: "); u8g2.print(p.str);
+  u8g2.setCursor(12, 45); u8g2.print("AGI: "); u8g2.print(p.agi);
+  u8g2.setCursor(12, 55); u8g2.print("TEC: "); u8g2.print(p.tec);
+  u8g2.drawStr(60, 35, "EQUIP: MK-I BLASTER");
+  u8g2.drawStr(60, 45, "ARMOR: KEVLAR_SHELL");
+  u8g2.drawStr(60, 55, "CHIP:  RYZEN_CORE");
+}
+
+void updateGame() {
+  p.inMenu = (digitalRead(PIN_MENU) == LOW);
+  if(digitalRead(STICK_SW) == LOW) { p.paused = !p.paused; delay(300); }
+  if(p.paused || p.dead || p.inMenu) return;
+
+  int sX = analogRead(STICK_X);
+  float speed = (digitalRead(PIN_DASH) == LOW) ? 6 : 3;
+  if(sX > 600) { worldX += speed; p.dir = 1; }
+  else if(sX < 400) { if(worldX > 0) worldX -= speed; p.dir = -1; }
+
+  if(digitalRead(PIN_JUMP) == LOW && !p.jumping) { p.vy = -6.5; p.jumping = true; }
+  p.y += p.vy;
+  if(p.y < 46) p.vy += 0.8; else { p.y = 46; p.vy = 0; p.jumping = false; }
+
+  if(!bot.active) { bot.x = 140; bot.active = true; }
+  bot.x -= 2;
+  if(bot.x < -10) bot.active = false;
+  if(bot.active && abs(bot.x - p.x) < 8 && abs(bot.y - p.y) < 10) { p.hp -= 10; bot.active = false; if(p.hp <= 0) p.dead = true; }
+}
+
+void loop() {
+  playMusic();
+  updateGame();
+
+  u8g2.firstPage();
+  do {
+    if (p.inMenu) { drawMenu(); }
+    else if (p.dead) { u8g2.setFont(u8g2_font_6x12_tf); u8g2.drawStr(35, 35, "DEAD"); }
+    else {
+      // World
+      u8g2.drawHLine(0, 63, 128);
+      for(int i=0; i<3; i++) { int bx = (i * 70) - (worldX % 210); u8g2.drawFrame(bx, 10, 30, 53); }
+
+      // Player
+      u8g2.drawBox(p.x+2, p.y, 4, 4); u8g2.drawFrame(p.x+1, p.y+4, 6, 8); // Humanoid
+      u8g2.drawVLine(p.x+2, p.y+12, 4); u8g2.drawVLine(p.x+5, p.y+12, 4);
+
+      if(bot.active) u8g2.drawCircle(bot.x, bot.y, 4);
+
+      // REDESIGNED ATTACK
+      if(digitalRead(PIN_FIRE) == LOW) {
+        int fx = (p.dir > 0) ? p.x + 8 : p.x - 4;
+        u8g2.drawBox(fx, p.y+5, 4, 4); // Muzzle flash
+        for(int i=0; i<3; i++) { // Projectile pulses
+          int px = (p.dir > 0) ? fx + 10 + (i*8) : fx - 10 - (i*8);
+          u8g2.drawHLine(px, p.y+7, 4);
+        }
+        if(bot.active && abs(bot.x - (p.x + (p.dir * 30))) < 20) { bot.active = false; p.xp += 25; }
+        tone(BZ_MEL, 1500, 10);
+      }
+
+      // HUD
+      u8g2.setFont(u8g2_font_u8glib_4_tf);
+      u8g2.setCursor(2, 7); u8g2.print("LV:"); u8g2.print(p.lv); u8g2.print(" XP:"); u8g2.print(p.xp);
+      u8g2.drawFrame(90, 2, 35, 5); u8g2.drawBox(91, 3, (p.hp * 33) / 100, 3);
+      if(p.paused) u8g2.drawStr(50, 35, "- PAUSED -");
+    }
+  } while ( u8g2.nextPage() );
+}

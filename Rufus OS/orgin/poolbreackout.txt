@@ -1,0 +1,192 @@
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SH110X.h>
+
+#define ADDR 0x3C 
+#define BTN_L 9
+#define BTN_A 10
+#define BTN_R 11
+
+Adafruit_SH1106G display = Adafruit_SH1106G(128, 64, &Wire, -1);
+
+enum State { MENU, POOL, BREAKOUT };
+State state = MENU;
+int selection = 0;
+int level = 1;
+int shake = 0;
+
+// --- PARTICLE SYSTEM ---
+struct Particle { float x, y, vx, vy; int life; };
+Particle parts[8];
+
+void spawnBreak(float x, float y) {
+  for(int i=0; i<8; i++) parts[i] = {x, y, (float)random(-20,21)/10.0f, (float)random(-20,21)/10.0f, random(5,15)};
+}
+
+// --- GAME DATA ---
+struct Ball { float x, y, vx, vy; bool active; };
+Ball balls[7];
+float aim = 4.71, pwr = 0, pwrS = 0.6;
+bool isMoving = false, placementMode = false;
+float bx, by, bvx, bvy, padX, padVel;
+bool bricks[12];
+
+void initPool() {
+  for(int i=0; i<7; i++) { balls[i].vx = 0; balls[i].vy = 0; balls[i].active = true; }
+  balls[0].x = 32; balls[0].y = 105;
+  int idx = 1;
+  for(int r=0; r<3; r++) for(int c=0; c<=r; c++) 
+    balls[idx++] = {32.0f + (c*7.5) - (r*3.75), 35.0f - (r*6.5), 0, 0, true};
+  isMoving = false; placementMode = false;
+}
+
+void initBreakout(bool nextLevel) {
+  bx = 32; by = 64; 
+  if(!nextLevel) level = 1;
+  float s = 1.0 + (level * 0.15);
+  bvx = 1.3 * s; bvy = 1.3 * s; padX = 22; padVel = 0;
+  for(int i=0; i<12; i++) bricks[i] = true;
+}
+
+void resolvePoolCol(int i, int j) {
+  float dx = balls[j].x - balls[i].x;
+  float dy = balls[j].y - balls[i].y;
+  float distSq = dx*dx + dy*dy;
+  if (distSq < 36.0f && distSq > 0) {
+    float dist = sqrt(distSq);
+    float nx = dx / dist; float ny = dy / dist;
+    float overlap = 6.1f - dist;
+    balls[i].x -= nx * overlap / 2.0f; balls[i].y -= ny * overlap / 2.0f;
+    balls[j].x += nx * overlap / 2.0f; balls[j].y += ny * overlap / 2.0f;
+    float v1n = balls[i].vx * nx + balls[i].vy * ny;
+    float v2n = balls[j].vx * nx + balls[j].vy * ny;
+    float impulse = v1n - v2n;
+    balls[i].vx -= impulse * nx; balls[i].vy -= impulse * ny;
+    balls[j].vx += impulse * nx; balls[j].vy += impulse * ny;
+  }
+}
+
+void setup() {
+  pinMode(BTN_L, INPUT_PULLUP); pinMode(BTN_R, INPUT_PULLUP); pinMode(BTN_A, INPUT_PULLUP);
+  display.begin(ADDR, true); display.setRotation(1);
+  display.setTextColor(SH110X_WHITE);
+}
+
+void loop() {
+  bool L = digitalRead(BTN_L) == LOW;
+  bool R = digitalRead(BTN_R) == LOW;
+  bool A = digitalRead(BTN_A) == LOW;
+
+  if (L && R) { state = MENU; delay(500); return; }
+
+  int ox = (shake > 0) ? random(-shake, shake+1) : 0;
+  int oy = (shake > 0) ? random(-shake, shake+1) : 0;
+  if(shake > 0) shake--;
+
+  display.clearDisplay();
+
+  if (state == MENU) {
+    display.drawRect(0, 0, 64, 20, 1);
+    display.setCursor(10, 6); display.print("RUFUS OS");
+    if(selection == 0) display.fillRect(4, 30, 56, 14, 1);
+    display.setTextColor(selection == 0 ? 0 : 1);
+    display.setCursor(18, 33); display.print("POOL");
+    display.setTextColor(1);
+    if(selection == 1) display.fillRect(4, 48, 56, 14, 1);
+    display.setTextColor(selection == 1 ? 0 : 1);
+    display.setCursor(8, 51); display.print("BREAKOUT");
+    display.setTextColor(1);
+    display.drawFastHLine(0, 75, 64, 1);
+    display.setCursor(2, 85);
+    display.print(selection == 0 ? "Side-Pocket\nRestore" : "Brick Shatter");
+
+    if (L) { selection = 0; delay(150); }
+    if (R) { selection = 1; delay(150); }
+    if (A) { 
+      if(selection == 0) { state = POOL; initPool(); } 
+      else { state = BREAKOUT; initBreakout(false); }
+      delay(400); 
+    }
+  } 
+
+  else if (state == BREAKOUT) {
+    display.drawRect(ox, oy, 64, 128, 1);
+    if (L) padVel = -2.8; else if (R) padVel = 2.8; else padVel *= 0.7;
+    padX += padVel; padX = constrain(padX, 2, 44);
+    display.fillRect(padX+ox, 120+oy, 18, 3, 1);
+    
+    bx += bvx; by += bvy;
+    if (bx < 3 || bx > 61) bvx *= -1;
+    if (by < 3) bvy *= -1;
+    if (by > 118 && bx > padX && bx < padX + 18) { bvy *= -1; bvx += padVel * 0.3; }
+
+    for(int i=0; i<12; i++) {
+      if(bricks[i]) {
+        int x = (i%4)*15+2, y = (i/4)*8+15;
+        display.drawRect(x+ox, y+oy, 12, 5, 1);
+        if(bx > x && bx < x+12 && by > y && by < y+5) { bricks[i] = false; bvy *= -1; shake = 3; spawnBreak(x+6, y+2); }
+      }
+    }
+    for(int i=0; i<8; i++) if(parts[i].life > 0) {
+      parts[i].x += parts[i].vx; parts[i].y += parts[i].vy; parts[i].life--;
+      display.drawPixel(parts[i].x+ox, parts[i].y+oy, 1);
+    }
+    display.fillCircle(bx+ox, by+oy, 2, 1);
+    if(by > 128) initBreakout(false);
+  }
+
+  else if (state == POOL) {
+    // RESTORED RAIL GEOMETRY
+    display.drawFastHLine(8+ox, 2+oy, 48, 1);   display.drawFastHLine(8+ox, 125+oy, 48, 1);
+    display.drawFastVLine(2+ox, 8+oy, 50, 1);   display.drawFastVLine(2+ox, 70+oy, 50, 1);
+    display.drawFastVLine(61+ox, 8+oy, 50, 1);  display.drawFastVLine(61+ox, 70+oy, 50, 1);
+
+    if (placementMode) {
+      if (L) balls[0].x -= 1.5; if (R) balls[0].x += 1.5;
+      balls[0].x = constrain(balls[0].x, 10, 54);
+      display.drawCircle(balls[0].x+ox, 105+oy, 3, 1);
+      if (A) { balls[0].active = true; placementMode = false; delay(300); }
+    } else if (!isMoving) {
+      if (L) aim -= 0.04; if (R) aim += 0.04;
+      pwr += pwrS; if (pwr > 18 || pwr < 0) pwrS = -pwrS;
+      for(int i=0; i<24; i+=6) display.drawPixel(balls[0].x + cos(aim)*(12+i), balls[0].y + sin(aim)*(12+i), 1);
+      display.drawLine(balls[0].x, balls[0].y, balls[0].x + cos(aim)*10, balls[0].y + sin(aim)*10, 1);
+      display.drawRect(58, 85, 4, 32, 1);
+      display.fillRect(59, 116 - map((int)pwr, 0, 18, 0, 30), 2, map((int)pwr, 0, 18, 0, 30), 1);
+      if (A) { balls[0].vx = cos(aim)*pwr; balls[0].vy = sin(aim)*pwr; isMoving = true; delay(300); }
+    }
+    
+    for (int i = 0; i < 7; i++) {
+      if (!balls[i].active) continue;
+      balls[i].x += balls[i].vx; balls[i].y += balls[i].vy;
+      balls[i].vx *= 0.988; balls[i].vy *= 0.988; 
+
+      if (balls[i].x < 6 || balls[i].x > 58) {
+        if (balls[i].y > 8 && balls[i].y < 120 && !(balls[i].y > 58 && balls[i].y < 70)) {
+          balls[i].vx *= -0.7; balls[i].x = constrain(balls[i].x, 6, 58);
+        }
+      }
+      if (balls[i].y < 6 || balls[i].y > 122) {
+        if (balls[i].x > 8 && balls[i].x < 56) {
+          balls[i].vy *= -0.7; balls[i].y = constrain(balls[i].y, 6, 122);
+        }
+      }
+
+      bool inCorner = (balls[i].y < 9 || balls[i].y > 119) && (balls[i].x < 9 || balls[i].x > 55);
+      bool inSide = (balls[i].y > 60 && balls[i].y < 68) && (balls[i].x < 7 || balls[i].x > 57);
+      if(inCorner || inSide) {
+        balls[i].active = false;
+        if(i == 0) { placementMode = true; balls[0].x = 32; balls[0].y = 105; balls[0].vx = 0; balls[0].vy = 0; }
+      }
+      for(int j=i+1; j<7; j++) if(balls[j].active) resolvePoolCol(i, j);
+    }
+    isMoving = false;
+    for(int i=0; i<7; i++) if(abs(balls[i].vx) > 0.05 || abs(balls[i].vy) > 0.05) isMoving = true;
+
+    for (int i = 0; i < 7; i++) if (balls[i].active) {
+      if (i == 0) display.fillCircle(balls[i].x+ox, balls[i].y+oy, 3, 1);
+      else display.drawCircle(balls[i].x+ox, balls[i].y+oy, 3, 1);
+    }
+  }
+  display.display();
+}

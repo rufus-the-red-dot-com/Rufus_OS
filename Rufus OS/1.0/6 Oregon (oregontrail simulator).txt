@@ -1,0 +1,281 @@
+#include <Arduino.h>
+#include <U8g2lib.h>
+#include <Wire.h>
+
+U8G2_SH1106_128X64_NONAME_1_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+
+// --- PIN DEFINITIONS ---
+#define STICK_X    A0
+#define STICK_Y    A1
+#define BTN_OK     10 // Confirm / Shoot
+#define BTN_REST   11 // Rest / Hunt Trigger
+#define BTN_MOD    9  // Rations
+#define BTN_MENU   5  // Pace
+#define BZ_SFX     3  // Buzzer
+
+// --- GAME CONSTANTS ---
+const int WIN_DISTANCE = 2000;
+const char* foodRations[] = {"Filling", "Meager", "Bare Bones"};
+const char* travelPaces[] = {"Steady", "Strenuous", "Grueling"};
+
+// --- GAME STATES ---
+enum GameState { STATE_TITLE, STATE_TRAVEL, STATE_EVENT, STATE_HUNT, STATE_GAMEOVER, STATE_WIN };
+GameState currentState = STATE_TITLE;
+
+// --- PLAYER STATE ---
+int distanceTraveled = 0;
+int food = 500;
+int health = 100;
+int day = 1;
+int pace = 0;    
+int rations = 0; 
+String lastEvent = "The journey begins...";
+
+// --- HUNTING STATE ---
+float targetX, targetY;
+float crosshairX = 64, crosshairY = 32;
+bool targetActive = false;
+int huntTimer = 0;
+int foodGained = 0;
+
+unsigned long lastInputTime = 0;
+const int inputDelay = 200;
+
+void playSfx(int freq, int duration) {
+  tone(BZ_SFX, freq, duration);
+}
+
+void resetGame() {
+  distanceTraveled = 0;
+  food = 500;
+  health = 100;
+  day = 1;
+  pace = 0;
+  rations = 0;
+  lastEvent = "Heading West...";
+  currentState = STATE_TRAVEL;
+  playSfx(400, 100);
+  delay(100);
+  playSfx(600, 150);
+}
+
+void triggerEvent() {
+  int r = random(0, 100);
+  if (r < 10) {
+    lastEvent = "A wagon wheel broke!";
+    health -= 15;
+    playSfx(150, 300);
+  } else if (r < 25) {
+    lastEvent = "Wild berries! +30 food";
+    food += 30;
+    playSfx(800, 50);
+  } else if (r < 40) {
+    lastEvent = "Cholera strikes!";
+    health -= 30;
+    playSfx(100, 500);
+  } else if (r < 55) {
+    lastEvent = "Heavy rain slows you down.";
+    distanceTraveled -= 15;
+    playSfx(200, 100);
+  } else {
+    lastEvent = "A peaceful day on the trail.";
+  }
+}
+
+void startHunt() {
+  currentState = STATE_HUNT;
+  huntTimer = 150; // Roughly 5-8 seconds
+  targetActive = false;
+  foodGained = 0;
+  playSfx(300, 50);
+}
+
+void updateHunt() {
+  // Move crosshair
+  int ax = analogRead(STICK_X);
+  int ay = analogRead(STICK_Y);
+  if (ax < 400) crosshairX -= 2; if (ax > 624) crosshairX += 2;
+  if (ay < 400) crosshairY -= 2; if (ay > 700) crosshairY += 2;
+  crosshairX = constrain(crosshairX, 0, 127);
+  crosshairY = constrain(crosshairY, 0, 63);
+
+  // Manage target
+  if (!targetActive && random(0, 20) == 0) {
+    targetX = random(10, 110);
+    targetY = random(10, 50);
+    targetActive = true;
+  }
+
+  if (targetActive && digitalRead(BTN_OK) == LOW && millis() - lastInputTime > inputDelay) {
+    playSfx(100, 20); // Gunshot
+    if (abs(crosshairX - targetX) < 8 && abs(crosshairY - targetY) < 8) {
+      foodGained += 40;
+      targetActive = false;
+      playSfx(1000, 30);
+    }
+    lastInputTime = millis();
+  }
+
+  huntTimer--;
+  if (huntTimer <= 0) {
+    food += foodGained;
+    
+    // HEALING LOGIC: Hunting now acts as a rest period
+    health += 20; 
+    if (health > 100) health = 100;
+    
+    lastEvent = "Rest & Hunt over. +" + String(foodGained) + " food, +20 HP.";
+    day++; // Hunting takes a day
+    currentState = STATE_EVENT;
+  }
+}
+
+void processTurn() {
+  day++;
+  int baseMiles = (pace + 1) * 15;
+  distanceTraveled += baseMiles + random(0, 10);
+  
+  int foodEaten = (3 - rations) * 10;
+  food -= foodEaten;
+  if (food < 0) { food = 0; health -= 20; }
+  
+  health -= (pace * 8); 
+  if (rations == 2) health -= 8; 
+  if (health > 100) health = 100;
+  
+  if (health <= 0) {
+    currentState = STATE_GAMEOVER;
+    playSfx(80, 1000);
+  } else if (distanceTraveled >= WIN_DISTANCE) {
+    currentState = STATE_WIN;
+    playSfx(1200, 200); delay(50); playSfx(1500, 400);
+  } else {
+    triggerEvent();
+    currentState = STATE_EVENT;
+  }
+}
+
+void handleInput() {
+  if (millis() - lastInputTime < inputDelay) return;
+
+  if (currentState == STATE_TITLE) {
+    if (digitalRead(BTN_OK) == LOW) resetGame();
+  } 
+  else if (currentState == STATE_TRAVEL) {
+    if (digitalRead(BTN_OK) == LOW) { processTurn(); lastInputTime = millis(); }
+    if (digitalRead(BTN_REST) == LOW) { startHunt(); lastInputTime = millis(); }
+    if (digitalRead(BTN_MENU) == LOW) { pace = (pace + 1) % 3; playSfx(500, 20); lastInputTime = millis(); }
+    if (digitalRead(BTN_MOD) == LOW) { rations = (rations + 1) % 3; playSfx(500, 20); lastInputTime = millis(); }
+  }
+  else if (currentState == STATE_EVENT) {
+    if (digitalRead(BTN_OK) == LOW) { currentState = STATE_TRAVEL; lastInputTime = millis(); }
+  }
+  else if (currentState == STATE_GAMEOVER || currentState == STATE_WIN) {
+    if (digitalRead(BTN_OK) == LOW) currentState = STATE_TITLE;
+  }
+}
+
+void drawUI() {
+  u8g2.firstPage();
+  do {
+    if (currentState == STATE_TITLE) {
+      u8g2.setFont(u8g2_font_logisoso16_tr);
+      u8g2.drawStr(10, 30, "OREGON");
+      u8g2.drawStr(35, 55, "TRAIL");
+      u8g2.setFont(u8g2_font_5x7_tf);
+      u8g2.drawStr(25, 63, "10:START  11:HUNT");
+    } 
+    else if (currentState == STATE_TRAVEL) {
+      u8g2.setFont(u8g2_font_u8glib_4_tf);
+      u8g2.setCursor(0, 5); u8g2.print("Day:"); u8g2.print(day);
+      u8g2.setCursor(45, 5); u8g2.print("Mi:"); u8g2.print(distanceTraveled);
+      u8g2.setCursor(95, 5); u8g2.print("F:"); u8g2.print(food);
+
+      // --- ANIMATED WAGON ---
+      int bounce = (millis() / 250) % 2; // Simple 0-1 vertical bounce
+      int wx = 45; // Wagon Base X
+      int wy = 20 + bounce; // Wagon Base Y
+      
+      // Wagon Canvas/Top
+      u8g2.drawFrame(wx, wy - 4, 30, 6);
+      u8g2.drawBox(wx + 2, wy - 3, 26, 4);
+      // Wagon Body
+      u8g2.drawBox(wx, wy, 30, 8); 
+      
+      // Rotating Wheels
+      int wheelPhase = (millis() / 150) % 4;
+      int wheelsX[] = {wx + 5, wx + 25};
+      for(int i=0; i<2; i++) {
+        u8g2.drawCircle(wheelsX[i], wy + 11, 4);
+        // Spokes animation
+        if (wheelPhase == 0) u8g2.drawLine(wheelsX[i]-4, wy+11, wheelsX[i]+4, wy+11);
+        else if (wheelPhase == 1) u8g2.drawLine(wheelsX[i]-3, wy+8, wheelsX[i]+3, wy+14);
+        else if (wheelPhase == 2) u8g2.drawLine(wheelsX[i], wy+7, wheelsX[i], wy+15);
+        else u8g2.drawLine(wheelsX[i]-3, wy+14, wheelsX[i]+3, wy+8);
+      }
+      
+      u8g2.drawLine(wx + 30, wy + 5, wx + 45, wy + 5); // Ox lead
+
+      u8g2.setFont(u8g2_font_5x7_tf);
+      u8g2.setCursor(0, 48); u8g2.print("HP: ");
+      u8g2.drawFrame(25, 42, 80, 6);
+      u8g2.drawBox(25, 42, (health * 0.8), 6);
+
+      u8g2.setCursor(0, 58); u8g2.print("Pace: "); u8g2.print(travelPaces[pace]);
+      u8g2.setCursor(0, 64); u8g2.print("Ration: "); u8g2.print(foodRations[rations]);
+      u8g2.setFont(u8g2_font_u8glib_4_tf);
+      u8g2.drawStr(90, 58, "10:GO");
+      u8g2.drawStr(90, 64, "11:HUNT");
+    }
+    else if (currentState == STATE_HUNT) {
+      u8g2.setFont(u8g2_font_u8glib_4_tf);
+      u8g2.setCursor(0, 5); u8g2.print("TIME: "); u8g2.print(huntTimer);
+      u8g2.setCursor(80, 5); u8g2.print("MEAT: "); u8g2.print(foodGained);
+      
+      if (targetActive) {
+        // --- DETAILED ANIMAL (DEER) ---
+        u8g2.drawBox(targetX, targetY, 7, 4); // Body
+        u8g2.drawVLine(targetX + 1, targetY + 4, 3); // Front leg
+        u8g2.drawVLine(targetX + 5, targetY + 4, 3); // Back leg
+        u8g2.drawBox(targetX + 5, targetY - 3, 3, 4); // Neck/Head
+        u8g2.drawPixel(targetX + 5, targetY - 4); // Ear/Antler
+        u8g2.drawPixel(targetX + 7, targetY - 4); // Ear/Antler
+      }
+      
+      // Crosshair
+      u8g2.drawHLine(crosshairX - 5, crosshairY, 11);
+      u8g2.drawVLine(crosshairX, crosshairY - 5, 11);
+    }
+    else if (currentState == STATE_EVENT) {
+      u8g2.setFont(u8g2_font_6x10_tf);
+      u8g2.drawStr(10, 20, "LOG:");
+      u8g2.setFont(u8g2_font_5x7_tf);
+      u8g2.setCursor(10, 35); u8g2.print(lastEvent);
+      u8g2.drawStr(20, 55, "[BTN 10 CONTINUE]");
+    }
+    else if (currentState == STATE_GAMEOVER) {
+      u8g2.setFont(u8g2_font_logisoso16_tr);
+      u8g2.drawStr(10, 35, "DEAD");
+    }
+    else if (currentState == STATE_WIN) {
+      u8g2.setFont(u8g2_font_logisoso16_tr);
+      u8g2.drawStr(10, 35, "OREGON!");
+    }
+  } while (u8g2.nextPage());
+}
+
+// RESTORED SETUP FUNCTION
+void setup() {
+  pinMode(BTN_OK, INPUT_PULLUP);
+  pinMode(BTN_REST, INPUT_PULLUP);
+  pinMode(BTN_MOD, INPUT_PULLUP);
+  pinMode(BTN_MENU, INPUT_PULLUP);
+  u8g2.begin();
+  randomSeed(analogRead(A2));
+}
+
+void loop() {
+  if (currentState == STATE_HUNT) updateHunt();
+  else handleInput();
+  drawUI();
+}

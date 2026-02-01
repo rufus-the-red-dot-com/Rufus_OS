@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CyberRunner v5.3.0 - Casino Edition</title>
+    <style>
+        :root {
+            --primary-color: #00ffff;
+            --danger-color: #ff4136;
+            --warning-color: #f1c40f;
+            --background-color: #000;
+            --text-color: #e0e0e0;
+            --dark-grey: #2d3436;
+            --light-grey: #485460;
+            --elite-color: #f39c12;
+            --player-color: #0074D9;
+            --casino-green: #00ff41;
+            --casino-green-glow: rgba(0, 255, 65, 0.2);
+        }
+
+        html, body { margin: 0; padding: 0; background-color: var(--background-color); color: var(--text-color); font-family: 'Courier New', monospace; overflow: hidden; width: 100%; height: 100%; }
+        .canvas { display: block; width: 100%; height: 100%; position: absolute; top: 0; left: 0; image-rendering: pixelated; }
+        
+        /* HUD & UI */
+        #ui-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; padding: 20px; box-sizing: border-box; z-index: 10; display: flex; flex-direction: column; justify-content: space-between; }
+        .hud { display: flex; justify-content: space-between; text-shadow: 2px 2px #000; }
+        .stat-bar { width: 200px; height: 15px; background: var(--dark-grey); border: 1px solid var(--light-grey); margin-top: 5px; }
+        #health-bar-inner { height: 100%; background: var(--danger-color); width: 100%; transition: width 0.3s; }
+        
+        /* Casino Overlay */
+        #casino-ui { 
+            display: none; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); 
+            width: 500px; background: rgba(10, 15, 10, 0.95); border: 3px solid var(--casino-green); 
+            padding: 30px; text-align: center; z-index: 100; box-shadow: 0 0 30px var(--casino-green-glow);
+        }
+        .card-zone { display: flex; justify-content: center; gap: 10px; margin: 20px 0; min-height: 100px; }
+        .card { background: #111; border: 2px solid var(--casino-green); color: var(--casino-green); width: 60px; height: 90px; display: flex; align-items: center; justify-content: center; font-size: 24px; font-weight: bold; border-radius: 5px; }
+        .casino-btn { background: transparent; border: 1px solid var(--casino-green); color: var(--casino-green); padding: 10px 20px; cursor: pointer; font-family: inherit; margin: 5px; }
+        .casino-btn.selected { background: var(--casino-green); color: #000; box-shadow: 0 0 10px var(--casino-green); }
+
+        #message-box { position: absolute; bottom: 100px; left: 50%; transform: translateX(-50%); background: rgba(0,0,0,0.8); border: 1px solid var(--primary-color); padding: 10px 20px; opacity: 0; transition: opacity 0.5s; z-index: 100; }
+    </style>
+</head>
+<body>
+
+<div id="ui-overlay">
+    <div class="hud">
+        <div>
+            <div>VITALS</div>
+            <div class="stat-bar"><div id="health-bar-inner"></div></div>
+            <div style="margin-top:10px; color:var(--warning-color)">DEBT: <span id="debt-display">5000</span>¥</div>
+        </div>
+        <div style="text-align:right">
+            <div id="nuyen-display">0¥</div>
+            <div style="font-size:0.8em; opacity:0.7">ZONE: OUTER RIM (SOUTH)</div>
+        </div>
+    </div>
+    <div id="controls-display" style="text-align:center; font-size:0.9em;">[WASD] MOVE | [E] INTERACT</div>
+</div>
+
+<div id="casino-ui">
+    <h1 style="color:var(--casino-green); margin-top:0;">RED VELVET CASINO</h1>
+    <div id="casino-msg">PLACE YOUR BET: 100¥</div>
+    <div style="font-size:0.7em; margin-top:10px;">DEALER</div>
+    <div class="card-zone" id="dealer-cards"></div>
+    <div style="font-size:0.7em;">PLAYER</div>
+    <div class="card-zone" id="player-cards"></div>
+    <div id="casino-actions">
+        <button id="bet-btn" class="casino-btn" onclick="casinoDeal()">[E] DEAL 100¥</button>
+        <button id="hit-btn" class="casino-btn" onclick="casinoHit()" style="display:none;">HIT</button>
+        <button id="stay-btn" class="casino-btn" onclick="casinoStay()" style="display:none;">STAY</button>
+        <button class="casino-btn" onclick="exitCasino()">EXIT</button>
+    </div>
+</div>
+
+<div id="message-box"></div>
+<canvas id="gameCanvas" class="canvas"></canvas>
+
+<script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+
+    // --- GAME STATE ---
+    let gameState = 'physical';
+    let player = { x: 4800, y: 6500, width: 40, height: 40, nuyen: 500, debt: 5000, health: 100, maxHealth: 100 };
+    const casinoBuilding = { x: 4700, y: 6900, width: 200, height: 150 };
+    let keys = {};
+
+    // --- BLACKJACK STATE ---
+    let deck = [], pHand = [], dHand = [];
+    const values = ['2','3','4','5','6','7','8','9','10','J','Q','K','A'];
+
+    window.addEventListener('keydown', e => keys[e.code] = true);
+    window.addEventListener('keyup', e => keys[e.code] = false);
+
+    function showMessage(txt) {
+        const box = document.getElementById('message-box');
+        box.textContent = txt;
+        box.style.opacity = '1';
+        setTimeout(() => box.style.opacity = '0', 2000);
+    }
+
+    // --- CASINO ENGINE ---
+    function resetDeck() {
+        deck = [];
+        for(let i=0; i<4; i++) deck.push(...values);
+        deck.sort(() => Math.random() - 0.5);
+    }
+
+    function getHandValue(hand) {
+        let val = 0, aces = 0;
+        hand.forEach(c => {
+            if(['J','Q','K'].includes(c)) val += 10;
+            else if(c === 'A') { val += 11; aces++; }
+            else val += parseInt(c);
+        });
+        while(val > 21 && aces > 0) { val -= 10; aces--; }
+        return val;
+    }
+
+    function casinoDeal() {
+        if(player.nuyen < 100) return showMessage("INSUFFICIENT FUNDS");
+        player.nuyen -= 100;
+        resetDeck();
+        pHand = [deck.pop(), deck.pop()];
+        dHand = [deck.pop()];
+        updateCasinoUI(true);
+    }
+
+    function casinoHit() {
+        pHand.push(deck.pop());
+        if(getHandValue(pHand) > 21) endHand("BUST. HOUSE WINS.");
+        else renderHands();
+    }
+
+    function casinoStay() {
+        while(getHandValue(dHand) < 17) dHand.push(deck.pop());
+        const pV = getHandValue(pHand), dV = getHandValue(dHand);
+        if(dV > 21 || pV > dV) {
+            player.nuyen += 200;
+            player.debt -= 200;
+            endHand("WINNER. 200¥ CREDITED.");
+        } else if(pV === dV) {
+            player.nuyen += 100;
+            endHand("PUSH. BET RETURNED.");
+        } else {
+            endHand("HOUSE WINS.");
+        }
+    }
+
+    function endHand(msg) {
+        document.getElementById('casino-msg').innerText = msg;
+        updateCasinoUI(false);
+    }
+
+    function updateCasinoUI(playing) {
+        document.getElementById('bet-btn').style.display = playing ? 'none' : 'inline-block';
+        document.getElementById('hit-btn').style.display = playing ? 'inline-block' : 'none';
+        document.getElementById('stay-btn').style.display = playing ? 'inline-block' : 'none';
+        renderHands();
+        document.getElementById('nuyen-display').innerText = player.nuyen + "¥";
+        document.getElementById('debt-display').innerText = player.debt;
+    }
+
+    function renderHands() {
+        document.getElementById('p-cards').innerHTML = pHand.map(c => `<div class="card">${c}</div>`).join('');
+        document.getElementById('d-cards').innerHTML = dHand.map(c => `<div class="card">${c}</div>`).join('');
+    }
+
+    function exitCasino() {
+        gameState = 'physical';
+        document.getElementById('casino-ui').style.display = 'none';
+        player.y -= 100; // Step back from door
+    }
+
+    // --- MAIN LOOP ---
+    function update() {
+        if(gameState === 'casino') return;
+
+        if(keys['KeyW']) player.y -= 5;
+        if(keys['KeyS']) player.y += 5;
+        if(keys['KeyA']) player.x -= 5;
+        if(keys['KeyD']) player.x += 5;
+
+        // Collision with Casino
+        if(player.x > casinoBuilding.x && player.x < casinoBuilding.x + casinoBuilding.width &&
+           player.y > casinoBuilding.y && player.y < casinoBuilding.y + casinoBuilding.height) {
+            if(keys['KeyE']) {
+                gameState = 'casino';
+                document.getElementById('casino-ui').style.display = 'block';
+                document.getElementById('casino-msg').innerText = "WANT TO CLEAR THAT DEBT, RUFUS?";
+            }
+        }
+    }
+
+    function draw() {
+        ctx.fillStyle = '#050505';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        // Relative camera
+        const camX = player.x - canvas.width/2;
+        const camY = player.y - canvas.height/2;
+
+        ctx.save();
+        ctx.translate(-camX, -camY);
+
+        // Draw World Grid
+        ctx.strokeStyle = '#111';
+        for(let i=0; i<9600; i+=100) { ctx.beginPath(); ctx.moveTo(i,0); ctx.lineTo(i,7200); ctx.stroke(); }
+
+        // Draw Casino Building
+        ctx.fillStyle = '#002a0a';
+        ctx.fillRect(casinoBuilding.x, casinoBuilding.y, casinoBuilding.width, casinoBuilding.height);
+        ctx.strokeStyle = '#00ff41';
+        ctx.lineWidth = 4;
+        ctx.strokeRect(casinoBuilding.x, casinoBuilding.y, casinoBuilding.width, casinoBuilding.height);
+        
+        ctx.fillStyle = '#00ff41';
+        ctx.font = '20px Courier New';
+        ctx.fillText("CASINO", casinoBuilding.x + 60, casinoBuilding.y + 80);
+        ctx.font = '12px Courier New';
+        ctx.fillText("[E] TO ENTER", casinoBuilding.x + 55, casinoBuilding.y + 110);
+
+        // Player
+        ctx.fillStyle = '#0074D9';
+        ctx.fillRect(player.x, player.y, player.width, player.height);
+        ctx.strokeStyle = '#fff';
+        ctx.strokeRect(player.x, player.y, player.width, player.height);
+
+        ctx.restore();
+        
+        document.getElementById('nuyen-display').innerText = player.nuyen + "¥";
+        document.getElementById('debt-display').innerText = player.debt;
+
+        update();
+        requestAnimationFrame(draw);
+    }
+
+    draw();
+</script>
+</body>
+</html>

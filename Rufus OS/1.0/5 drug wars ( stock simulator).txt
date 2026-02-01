@@ -1,0 +1,251 @@
+#include <Arduino.h>
+#include <U8g2lib.h>
+#include <Wire.h>
+
+U8G2_SH1106_128X64_NONAME_1_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+
+// --- PIN DEFINITIONS ---
+#define STICK_X    A0
+#define STICK_Y    A1
+#define BTN_BUY    10 // Primary Action / Confirm
+#define BTN_SELL   11 // Dedicated Sell
+#define BTN_MAX    12 // Modifier for "All/Max"
+#define BTN_TRAVEL 5  // Travel Menu
+
+// --- GAME CONSTANTS ---
+const int MAX_DAYS = 30;
+const int NUM_ITEMS = 6;
+const int NUM_LOCATIONS = 8; 
+const char* itemNames[] = {"Acid", "Cocaine", "Hash", "Heroin", "Speed", "Weed"};
+const int basePrices[] = {2500, 15000, 800, 25000, 150, 400};
+const char* locationNames[] = {"Bronx", "Ghetto", "Manhattan", "Queens", "Brooklyn", "Jersey", "BANK", "LOAN SHARK"};
+
+// --- GAME STATES ---
+enum GameState { STATE_TITLE, STATE_MARKET, STATE_TRAVEL, STATE_GAMEOVER };
+GameState currentState = STATE_TITLE;
+
+// --- PLAYER STATE ---
+long money = 2000;
+long bank = 0;
+long debt = 2000;
+int day = 1;
+int inventory[NUM_ITEMS] = {0, 0, 0, 0, 0, 0};
+int currentPrices[NUM_ITEMS];
+int prevPrices[NUM_ITEMS]; // Store previous day's prices for trend indicators
+int currentLocation = 0;
+int selectedIndex = 0;
+int maxStorage = 100;
+
+unsigned long lastInputTime = 0;
+const int inputDelay = 200; 
+
+void generatePrices() {
+  for (int i = 0; i < NUM_ITEMS; i++) {
+    // Save current as previous before generating new ones
+    prevPrices[i] = currentPrices[i];
+    
+    // Classic Drug Wars fluctuation: prices can be extremely low or high
+    // 20% to 250% of base price
+    float variance = random(20, 251) / 100.0;
+    currentPrices[i] = (int)(basePrices[i] * variance);
+    
+    // Safeguard: Ensure price is never negative or zero. 
+    // Minimum price is set to 5% of base price to prevent "dealer pays you"
+    int minPrice = basePrices[i] * 0.05;
+    if (minPrice < 5) minPrice = 5;
+    if (currentPrices[i] < minPrice) currentPrices[i] = minPrice;
+  }
+}
+
+void resetGame() {
+  money = 2000; bank = 0; debt = 2000; day = 1;
+  currentLocation = 0; selectedIndex = 0;
+  for (int i = 0; i < NUM_ITEMS; i++) inventory[i] = 0;
+  
+  // Initialize prices
+  for (int i = 0; i < NUM_ITEMS; i++) {
+    float variance = random(80, 121) / 100.0;
+    currentPrices[i] = (int)(basePrices[i] * variance);
+    prevPrices[i] = currentPrices[i];
+  }
+  
+  currentState = STATE_MARKET;
+}
+
+void setup() {
+  pinMode(BTN_BUY, INPUT_PULLUP);
+  pinMode(BTN_SELL, INPUT_PULLUP);
+  pinMode(BTN_MAX, INPUT_PULLUP);
+  pinMode(BTN_TRAVEL, INPUT_PULLUP);
+  u8g2.begin();
+  randomSeed(analogRead(A2));
+  resetGame();
+  currentState = STATE_TITLE; // Go back to title after initialization
+}
+
+int getInventoryCount() {
+  int total = 0;
+  for(int i=0; i<NUM_ITEMS; i++) total += inventory[i];
+  return total;
+}
+
+void handleMarketInput() {
+  int ay = analogRead(STICK_Y);
+  bool buyPressed = (digitalRead(BTN_BUY) == LOW);
+  bool sellPressed = (digitalRead(BTN_SELL) == LOW);
+  bool maxMod = (digitalRead(BTN_MAX) == LOW);
+  bool travelPressed = (digitalRead(BTN_TRAVEL) == LOW);
+
+  if (ay < 300) { selectedIndex--; lastInputTime = millis(); }
+  else if (ay > 700) { selectedIndex++; lastInputTime = millis(); }
+  selectedIndex = constrain(selectedIndex, 0, NUM_ITEMS - 1);
+
+  if (travelPressed) {
+    currentState = STATE_TRAVEL;
+    selectedIndex = 0; 
+    lastInputTime = millis();
+    return;
+  }
+
+  // BUY LOGIC
+  if (buyPressed) {
+    int spaceLeft = maxStorage - getInventoryCount();
+    int count = maxMod ? (money / currentPrices[selectedIndex]) : 1;
+    if (count > spaceLeft) count = spaceLeft;
+    
+    if (count > 0 && money >= (long)count * currentPrices[selectedIndex]) {
+      money -= (long)count * currentPrices[selectedIndex];
+      inventory[selectedIndex] += count;
+    }
+    lastInputTime = millis();
+  }
+
+  // SELL LOGIC
+  if (sellPressed) {
+    int count = maxMod ? inventory[selectedIndex] : 1;
+    if (count > 0 && inventory[selectedIndex] >= count) {
+      money += (long)count * currentPrices[selectedIndex];
+      inventory[selectedIndex] -= count;
+    }
+    lastInputTime = millis();
+  }
+}
+
+void handleTravelInput() {
+  int ay = analogRead(STICK_Y);
+  bool confirm = (digitalRead(BTN_BUY) == LOW);
+  
+  if (ay < 300) { selectedIndex--; lastInputTime = millis(); }
+  else if (ay > 700) { selectedIndex++; lastInputTime = millis(); }
+  selectedIndex = constrain(selectedIndex, 0, NUM_LOCATIONS - 1);
+
+  if (confirm) {
+    if (selectedIndex < 6) { 
+      if (selectedIndex != currentLocation) {
+        currentLocation = selectedIndex;
+        day++;
+        debt = (long)(debt * 1.12); // Interest
+        generatePrices();
+        if (day > MAX_DAYS) currentState = STATE_GAMEOVER;
+        else currentState = STATE_MARKET;
+        selectedIndex = 0;
+      } else {
+        currentState = STATE_MARKET;
+      }
+    } 
+    else if (selectedIndex == 6) { 
+      if (money > 0) { bank += money; money = 0; }
+      else if (bank > 0) { money += bank; bank = 0; }
+    }
+    else if (selectedIndex == 7) { 
+      if (money > 0 && debt > 0) {
+        if (money >= debt) { money -= debt; debt = 0; }
+        else { debt -= money; money = 0; }
+      }
+    }
+    lastInputTime = millis();
+  }
+}
+
+void drawUI() {
+  u8g2.firstPage();
+  do {
+    if (currentState == STATE_TITLE) {
+      u8g2.setFont(u8g2_font_logisoso16_tr);
+      u8g2.drawStr(10, 30, "DRUG WARS");
+      u8g2.setFont(u8g2_font_6x10_tf);
+      u8g2.drawStr(25, 45, "REFINED EDITION");
+      u8g2.drawStr(15, 60, "BTN 10: START");
+    } 
+    else if (currentState == STATE_MARKET) {
+      // Header
+      u8g2.setFont(u8g2_font_u8glib_4_tf);
+      u8g2.setCursor(0, 5); u8g2.print(locationNames[currentLocation]);
+      u8g2.setCursor(55, 5); u8g2.print("Day "); u8g2.print(day);
+      u8g2.setCursor(90, 5); u8g2.print("$"); u8g2.print(money);
+
+      // List
+      u8g2.setFont(u8g2_font_5x7_tf);
+      for (int i = 0; i < NUM_ITEMS; i++) {
+        int y = 15 + (i * 7);
+        if (selectedIndex == i) u8g2.drawTriangle(0, y-5, 3, y-3, 0, y-1);
+        
+        u8g2.setCursor(5, y); u8g2.print(itemNames[i]);
+        
+        // Draw Price
+        u8g2.setCursor(50, y); u8g2.print("$"); u8g2.print(currentPrices[i]);
+        
+        // Draw Trend Indicator
+        if (day > 1) {
+          if (currentPrices[i] > prevPrices[i]) {
+            // Up Arrow
+            u8g2.drawTriangle(82, y-1, 86, y-1, 84, y-5);
+          } else if (currentPrices[i] < prevPrices[i]) {
+            // Down Arrow
+            u8g2.drawTriangle(82, y-5, 86, y-5, 84, y-1);
+          }
+        }
+        
+        u8g2.setCursor(95, y); u8g2.print("x"); u8g2.print(inventory[i]);
+      }
+      
+      // Footer stats
+      u8g2.drawLine(0, 56, 128, 56);
+      u8g2.setFont(u8g2_font_u8glib_4_tf);
+      u8g2.setCursor(0, 63); u8g2.print("Inv: "); u8g2.print(getInventoryCount());
+      u8g2.print("/"); u8g2.print(maxStorage);
+      u8g2.setCursor(70, 63); u8g2.print("Debt: "); u8g2.print(debt);
+    }
+    else if (currentState == STATE_TRAVEL) {
+      u8g2.setFont(u8g2_font_6x10_tf);
+      u8g2.drawStr(20, 10, "WHERE TO?");
+      for (int i = 0; i < NUM_LOCATIONS; i++) {
+        int y = 22 + (i * 5);
+        if (selectedIndex == i) u8g2.drawTriangle(15, y-5, 18, y-3, 15, y-1);
+        u8g2.setFont(u8g2_font_u8glib_4_tf);
+        u8g2.setCursor(22, y); u8g2.print(locationNames[i]);
+      }
+      u8g2.setFont(u8g2_font_5x7_tf);
+      u8g2.setCursor(80, 30); u8g2.print("Cash: "); u8g2.print(money);
+      u8g2.setCursor(80, 40); u8g2.print("Bank: "); u8g2.print(bank);
+      u8g2.setCursor(80, 50); u8g2.print("Debt: "); u8g2.print(debt);
+    }
+    else if (currentState == STATE_GAMEOVER) {
+      u8g2.setFont(u8g2_font_7x14_tf);
+      u8g2.drawStr(30, 30, "FINISHED");
+      u8g2.setFont(u8g2_font_6x10_tf);
+      long score = money + bank - debt;
+      u8g2.setCursor(20, 50); u8g2.print("Net Score: $"); u8g2.print(score);
+    }
+  } while (u8g2.nextPage());
+}
+
+void loop() {
+  if (millis() - lastInputTime > inputDelay) {
+    if (currentState == STATE_TITLE && digitalRead(BTN_BUY) == LOW) resetGame();
+    else if (currentState == STATE_MARKET) handleMarketInput();
+    else if (currentState == STATE_TRAVEL) handleTravelInput();
+    else if (currentState == STATE_GAMEOVER && digitalRead(BTN_BUY) == LOW) currentState = STATE_TITLE;
+  }
+  drawUI();
+}

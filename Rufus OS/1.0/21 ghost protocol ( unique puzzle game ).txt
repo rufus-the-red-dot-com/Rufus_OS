@@ -1,0 +1,355 @@
+#include <Arduino.h>
+#include <U8g2lib.h>
+#include <Wire.h>
+
+// SH1106 128x64 I2C
+U8G2_SH1106_128X64_NONAME_1_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+
+// --- PIN DEFINITIONS ---
+#define STICK_X    A0
+#define STICK_Y    A1
+#define BTN_PULSE  11 // Pulse (Stun)
+#define BTN_CLOAK  10 // Cloak (Invisible)
+#define BTN_SHIFT  9  // Polarity Shift (Alpha/Omega)
+#define BTN_ZOOM   5  // Zoom Toggle
+#define BZ_OUT     3  
+
+// --- GAME CONSTANTS ---
+#define MAP_W 16
+#define MAP_H 8
+#define MAX_GUARDS 4
+#define MAX_LASERS 4
+
+// --- TILE TYPES ---
+#define T_FLOOR 0
+#define T_WALL  1
+#define T_EXIT  2
+#define T_ALPHA_WALL 3 // Only exists in Dark Mode
+#define T_OMEGA_WALL 4 // Only exists in Light Mode
+
+// --- ENUMS ---
+enum GameState { TITLE, PLAYING, NEXT_LEVEL, GAMEOVER };
+
+// --- ENTITY STRUCTURES ---
+struct Sentry {
+  float x, y;
+  float dx, dy;
+  int stun;
+  bool active;
+};
+
+struct Laser {
+  int x, y1, y2;
+  bool active;
+};
+
+// --- GLOBAL STATE ---
+byte gameMap[MAP_W][MAP_H];
+GameState state = TITLE;
+float pX, pY;
+int detection = 0;
+int energy = 100;
+int depth = 1;
+bool layerAlpha = true; 
+bool isZoomed = false;
+bool isCloaked = false;
+
+Sentry guards[MAX_GUARDS];
+Laser lasers[MAX_LASERS];
+
+// --- AUDIO ---
+void playSfx(int f, int d) { tone(BZ_OUT, f, d); }
+
+void playIntro() {
+  playSfx(440, 100); delay(120);
+  playSfx(880, 200);
+}
+
+// --- LEVEL GENERATION (PROCEDURAL) ---
+void generateLevel() {
+  detection = 0;
+  energy = 100;
+  layerAlpha = true;
+  
+  // Fill map with walls
+  for(int x=0; x<MAP_W; x++) {
+    for(int y=0; y<MAP_H; y++) gameMap[x][y] = T_WALL;
+  }
+
+  // Drunkard's Walk Algorithm for Random Layout
+  int curX = random(1, MAP_W-1);
+  int curY = random(1, MAP_H-1);
+  pX = curX + 0.5; pY = curY + 0.5; // Set player start
+  
+  int floorTiles = 0;
+  int targetFloor = 45 + (depth * 2);
+  if(targetFloor > 90) targetFloor = 90;
+
+  while(floorTiles < targetFloor) {
+    if(gameMap[curX][curY] == T_WALL) {
+      gameMap[curX][curY] = T_FLOOR;
+      floorTiles++;
+    }
+    
+    int dir = random(0, 4);
+    if(dir == 0 && curX > 1) curX--;
+    else if(dir == 1 && curX < MAP_W - 2) curX++;
+    else if(dir == 2 && curY > 1) curY--;
+    else if(dir == 3 && curY < MAP_H - 2) curY++;
+  }
+
+  // Place Exit at the last position of the drunkard's walk
+  gameMap[curX][curY] = T_EXIT;
+
+  // Add random Phase Walls onto floor tiles
+  int phaseWallCount = 3 + (depth / 2);
+  for(int i=0; i < phaseWallCount; i++) {
+    int rx = random(1, MAP_W-1);
+    int ry = random(1, MAP_H-1);
+    if(gameMap[rx][ry] == T_FLOOR && (abs(rx - (int)pX) + abs(ry - (int)pY) > 2)) {
+      gameMap[rx][ry] = (random(0, 2) == 0) ? T_ALPHA_WALL : T_OMEGA_WALL;
+    }
+  }
+
+  // Setup Guards (distributed on floor tiles far from player)
+  int numGuards = min(MAX_GUARDS, 1 + (depth / 2));
+  for(int i=0; i<MAX_GUARDS; i++) {
+    if(i < numGuards) {
+      int gx, gy;
+      do {
+        gx = random(1, MAP_W-1);
+        gy = random(1, MAP_H-1);
+      } while(gameMap[gx][gy] != T_FLOOR || (abs(gx - (int)pX) + abs(gy - (int)pY) < 5));
+      guards[i] = {(float)gx + 0.5f, (float)gy + 0.5f, 0.04f + (depth*0.01f), 0, 0, true};
+    } else guards[i].active = false;
+  }
+
+  // Setup Lasers at random horizontal positions
+  int numLasers = min(MAX_LASERS, 1 + (depth / 2));
+  for(int i=0; i<MAX_LASERS; i++) {
+    if(i < numLasers) {
+      lasers[i] = {random(2, MAP_W-2), 1, 6, true};
+    } else lasers[i].active = false;
+  }
+}
+
+bool isSolid(int x, int y) {
+  if (x < 0 || x >= MAP_W || y < 0 || y >= MAP_H) return true;
+  byte tile = gameMap[x][y];
+  if (tile == T_WALL) return true;
+  if (layerAlpha && tile == T_ALPHA_WALL) return true;
+  if (!layerAlpha && tile == T_OMEGA_WALL) return true;
+  return false;
+}
+
+void updateLogic() {
+  if (state != PLAYING) return;
+
+  // 1. Player Movement
+  float moveX = (analogRead(STICK_X) - 512) / 3000.0;
+  float moveY = (analogRead(STICK_Y) - 512) / 3000.0;
+  
+  if (!isSolid((int)(pX + moveX), (int)pY)) pX += moveX;
+  if (!isSolid((int)pX, (int)(pY + moveY))) pY += moveY;
+
+  // Check Win
+  if (gameMap[(int)pX][(int)pY] == T_EXIT) {
+    state = NEXT_LEVEL;
+    playSfx(1000, 100); playSfx(1500, 150);
+    return;
+  }
+
+  // 2. Cloak & Layer Energy Logic
+  if (isCloaked) {
+    energy -= 2;
+  } else if (!layerAlpha) {
+    if (millis() % 4 == 0) energy--; 
+  } else if (energy < 100 && millis() % 5 == 0) {
+    energy++;
+  }
+
+  if (energy <= 0) {
+    isCloaked = false;
+    energy = 0;
+    if (!layerAlpha) {
+      layerAlpha = true;
+      playSfx(200, 100);
+    }
+  }
+
+  // 3. Alpha Layer Entities (Guards)
+  for(int i=0; i<MAX_GUARDS; i++) {
+    if(!guards[i].active) continue;
+    if(guards[i].stun > 0) { guards[i].stun--; continue; }
+
+    guards[i].x += guards[i].dx;
+    if(isSolid((int)(guards[i].x + (guards[i].dx > 0 ? 0.6 : -0.6)), (int)guards[i].y)) {
+      guards[i].dx *= -1;
+    }
+
+    float dist = sqrt(pow(pX - guards[i].x, 2) + pow(pY - guards[i].y, 2));
+    if(!isCloaked) {
+      if(layerAlpha && dist < 2.0) {
+        detection += 6; 
+        if(millis() % 150 < 30) playSfx(200, 20);
+      } else if (!layerAlpha && dist < 1.2) {
+        detection += 3; 
+        if(millis() % 200 < 30) playSfx(150, 20);
+      }
+    }
+  }
+
+  // 4. Omega Layer Entities (Lasers)
+  bool laserCycle = (millis() % 1600 < 1000);
+  for(int i=0; i<MAX_LASERS; i++) {
+    if(!lasers[i].active) continue;
+    if(!layerAlpha && laserCycle && !isCloaked) {
+      if(abs(pX - lasers[i].x) < 0.4 && pY >= lasers[i].y1 && pY <= lasers[i].y2) {
+        detection += 5; 
+        if(millis() % 100 < 20) playSfx(300, 20);
+      }
+    }
+  }
+
+  if (detection > 100) {
+    state = GAMEOVER;
+    playSfx(100, 500);
+  } else if (detection > 0 && millis() % 15 == 0) {
+    detection--; 
+  }
+}
+
+void drawGame() {
+  u8g2.firstPage();
+  int ts = isZoomed ? 16 : 8;
+  int offX = isZoomed ? (64 - pX * ts) : 0;
+  int offY = isZoomed ? (32 - pY * ts) : 0;
+
+  do {
+    if (!layerAlpha) { u8g2.setDrawColor(1); u8g2.drawBox(0,0,128,64); u8g2.setDrawColor(0); }
+    else u8g2.setDrawColor(1);
+
+    if (state == TITLE) {
+      u8g2.setFont(u8g2_font_7x14_tf);
+      u8g2.drawStr(15, 30, "GHOST PROTOCOL");
+      u8g2.setFont(u8g2_font_4x6_tf);
+      u8g2.drawStr(35, 50, "PRESS D11 TO START");
+    } 
+    else if (state == GAMEOVER) {
+      u8g2.setFont(u8g2_font_7x14_tf);
+      u8g2.drawStr(25, 30, "SYSTEM PURGED");
+      u8g2.setFont(u8g2_font_4x6_tf);
+      u8g2.drawStr(30, 50, "PRESS D11 REBOOT");
+    }
+    else if (state == NEXT_LEVEL) {
+      u8g2.setFont(u8g2_font_7x14_tf);
+      u8g2.drawStr(20, 30, "NODE BREACHED");
+      u8g2.setCursor(45, 50); u8g2.print("DEPTH: "); u8g2.print(depth);
+    }
+    else {
+      for(int x=0; x<MAP_W; x++) {
+        for(int y=0; y<MAP_H; y++) {
+          byte tile = gameMap[x][y];
+          if (tile == T_WALL) u8g2.drawFrame(x*ts + offX, y*ts + offY, ts, ts);
+          else if (tile == T_ALPHA_WALL && layerAlpha) u8g2.drawBox(x*ts + offX + 1, y*ts + offY + 1, ts-2, ts-2);
+          else if (tile == T_OMEGA_WALL && !layerAlpha) u8g2.drawBox(x*ts + offX + 1, y*ts + offY + 1, ts-2, ts-2);
+          else if (tile == T_EXIT) u8g2.drawBox(x*ts + offX + 2, y*ts + offY + 2, ts-4, ts-4);
+        }
+      }
+
+      if (layerAlpha) {
+        for(int i=0; i<MAX_GUARDS; i++) {
+          if(!guards[i].active) continue;
+          u8g2.drawDisc(guards[i].x*ts + offX, guards[i].y*ts + offY, 2);
+          if(guards[i].stun > 0) u8g2.drawCircle(guards[i].x*ts + offX, guards[i].y*ts + offY, 6);
+        }
+      }
+
+      if (!layerAlpha && (millis() % 1600 < 1000)) {
+        for(int i=0; i<MAX_LASERS; i++) {
+          if(!lasers[i].active) continue;
+          u8g2.drawLine(lasers[i].x*ts + offX, lasers[i].y1*ts + offY, lasers[i].x*ts + offX, lasers[i].y2*ts + offY);
+        }
+      }
+
+      if (!(isCloaked && (millis() % 200 < 100))) {
+        u8g2.drawFrame(pX*ts + offX - 2, pY*ts + offY - 2, 5, 5);
+      }
+
+      u8g2.setDrawColor(layerAlpha ? 1 : 0);
+      u8g2.setFont(u8g2_font_4x6_tf);
+      u8g2.setCursor(2, 62); u8g2.print("DET:"); u8g2.print(detection); u8g2.print("%");
+      u8g2.setCursor(50, 62); u8g2.print("NRG:"); u8g2.print(energy);
+      u8g2.setCursor(95, 62); u8g2.print("DP:"); u8g2.print(depth);
+    }
+  } while (u8g2.nextPage());
+}
+
+void handleInput() {
+  static unsigned long lastIn = 0;
+  bool btn11 = (digitalRead(BTN_PULSE) == LOW);
+  bool btn10 = (digitalRead(BTN_CLOAK) == LOW);
+  bool btn9  = (digitalRead(BTN_SHIFT) == LOW);
+  bool btn5  = (digitalRead(BTN_ZOOM) == LOW);
+
+  if (state == TITLE || state == GAMEOVER) {
+    if (btn11) {
+      depth = 1;
+      generateLevel();
+      state = PLAYING;
+      playIntro();
+      lastIn = millis();
+    }
+    return;
+  }
+
+  if (state == NEXT_LEVEL) {
+    if (millis() - lastIn > 2000 || btn11) {
+      depth++;
+      generateLevel();
+      state = PLAYING;
+      lastIn = millis();
+    }
+    return;
+  }
+
+  if (btn9 && millis() - lastIn > 300 && energy > 10) {
+    layerAlpha = !layerAlpha;
+    playSfx(600 + (layerAlpha ? 200 : 0), 40);
+    lastIn = millis();
+  }
+
+  if (btn5 && millis() - lastIn > 300) {
+    isZoomed = !isZoomed;
+    lastIn = millis();
+  }
+
+  if (btn11 && energy >= 40 && millis() - lastIn > 500) {
+    bool hit = false;
+    for(int i=0; i<MAX_GUARDS; i++) {
+      if(guards[i].active && abs(guards[i].x - pX) < 3 && abs(guards[i].y - pY) < 3) {
+        guards[i].stun = 150;
+        hit = true;
+      }
+    }
+    if(hit) { energy -= 40; playSfx(1200, 80); }
+    lastIn = millis();
+  }
+
+  isCloaked = (btn10 && energy > 0);
+}
+
+void setup() {
+  pinMode(BTN_PULSE, INPUT_PULLUP);
+  pinMode(BTN_CLOAK, INPUT_PULLUP);
+  pinMode(BTN_SHIFT, INPUT_PULLUP);
+  pinMode(BTN_ZOOM, INPUT_PULLUP);
+  u8g2.begin();
+  randomSeed(analogRead(A2));
+}
+
+void loop() {
+  handleInput();
+  updateLogic();
+  drawGame();
+}

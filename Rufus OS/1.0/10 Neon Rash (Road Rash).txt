@@ -1,0 +1,374 @@
+#include <Arduino.h>
+#include <U8g2lib.h>
+#include <Wire.h>
+
+// SH1106 128x64 I2C
+U8G2_SH1106_128X64_NONAME_1_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+
+// --- PIN DEFINITIONS ---
+#define STICK_X    A0
+#define STICK_Y    A1
+#define STICK_SW   2  // Horn
+#define BTN_L_ATK  11 // Attack Left
+#define BTN_R_ATK  9  // Attack Right
+#define BTN_NITRO  5  // Nitro Boost
+#define BTN_PAUSE  10 // Cyberdeck (Pause/Inv)
+#define BZ_SFX     3  
+#define BZ_SFX_2   6  
+
+// --- GAME CONSTANTS ---
+#define MAX_SPEED       25.0
+#define ACCEL           0.24
+#define FRICTION        0.05
+#define BRAKE           0.45
+#define CHECKPOINT_GAP  10000 
+
+// --- ENUMS ---
+enum GameState { TITLE, RACING, PAUSED, SHOP, CRASHED, GOAL, CHECKPOINT_HIT };
+enum Weapon { FISTS, PIPE, CHAIN, STUN_BATON };
+
+struct Entity {
+  float x, z;
+  float speed;
+  int health;
+  bool active;
+  int type; 
+  int attackTimer; 
+};
+
+// --- GLOBAL STATE ---
+GameState state = TITLE;
+float playerX = 0; 
+float currentSpeed = 0;
+long distanceTraveled = 0;
+long nuyen = 0;
+int nitroCount = 3;
+Weapon currentWeapon = FISTS;
+
+// Progression
+int currentSector = 1;
+long sectorTargetDist = 30000; 
+long nextCheckpointDist = CHECKPOINT_GAP;
+
+float roadCurve = 0;
+float currentCurve = 0;
+long distToNextCurve = 1500; 
+int playerFlash = 0; 
+
+Entity rivals[3];
+unsigned long stateTimer = 0;
+
+// --- AUDIO ---
+void playEngineSound(float speed) {
+  if (speed < 1) { noTone(BZ_SFX); return; }
+  int freq = 40 + (int)(speed * 15);
+  tone(BZ_SFX, freq);
+}
+
+void playHorn() {
+  tone(BZ_SFX_2, 440, 50);
+  delay(60);
+  tone(BZ_SFX_2, 440, 200);
+}
+
+void playHitSound() {
+  tone(BZ_SFX_2, 1200, 30);
+  tone(BZ_SFX, 150, 30);
+}
+
+void playCheckpointSound() {
+  tone(BZ_SFX, 800, 100);
+  tone(BZ_SFX_2, 1600, 100);
+}
+
+// --- RENDER HELPERS ---
+void drawBiker(int x, int y, int scale, bool isPlayer, bool attackingLeft = false, bool attackingRight = false) {
+  if (y < 5 || y > 72 || x < -35 || x > 163) return; 
+  if (isPlayer && playerFlash > 0 && (millis() / 50) % 2 == 0) return;
+
+  int coreW = max(3, scale * 2);
+  int coreH = max(4, scale * 2);
+  int wheelW = max(1, scale / 2);
+  
+  u8g2.drawBox(x - coreW/2 - 1, y - wheelW, coreW + 2, wheelW);
+  u8g2.drawRBox(x - coreW/2, y - wheelW - coreH, coreW, coreH, 1);
+  u8g2.drawBox(x - 1, y - wheelW - coreH - (scale/2), 3, scale/2); 
+  u8g2.drawHLine(x - scale * 1.5, y - wheelW - (int)(coreH * 0.7), scale * 3); 
+  
+  if (attackingLeft) {
+    u8g2.drawLine(x - coreW/2, y - wheelW - coreH/2, x - scale * 4, y - wheelW - coreH);
+  }
+  if (attackingRight) {
+    u8g2.drawLine(x + coreW/2, y - wheelW - coreH/2, x + scale * 4, y - wheelW - coreH);
+  }
+}
+
+void initRace(bool resetProgress) {
+  if (resetProgress) {
+    currentSector = 1;
+    nuyen = 0;
+    nitroCount = 3;
+  }
+  
+  playerX = 0;
+  distanceTraveled = 0;
+  currentSpeed = 0;
+  roadCurve = 0;
+  currentCurve = 0;
+  distToNextCurve = 1500;
+  playerFlash = 0;
+  
+  sectorTargetDist = 20000 + (currentSector * 10000);
+  nextCheckpointDist = CHECKPOINT_GAP;
+  
+  for(int i=0; i<3; i++) {
+    rivals[i].z = 600 + (i * 400);
+    rivals[i].x = (random(-7, 8) / 10.0);
+    rivals[i].speed = 12 + random(0, 5 + currentSector);
+    rivals[i].active = true;
+    rivals[i].attackTimer = 0;
+  }
+  state = RACING;
+}
+
+void updatePhysics() {
+  int joyY = analogRead(STICK_Y);
+  int joyX = analogRead(STICK_X);
+
+  if (playerFlash > 0) playerFlash--;
+
+  // Acceleration / Momentum
+  if (joyY < 300) currentSpeed += ACCEL;
+  else if (joyY > 700) currentSpeed -= BRAKE;
+  else currentSpeed -= FRICTION; 
+
+  bool offRoad = abs(playerX) > 1.05;
+  if (offRoad) {
+    float drag = 0.6 + (abs(playerX) - 1.0) * 2.0; 
+    currentSpeed -= drag; 
+    if (currentSpeed > 9.0) currentSpeed *= 0.88; 
+  }
+
+  // Nitro
+  if (digitalRead(BTN_NITRO) == LOW && nitroCount > 0 && currentSpeed > 5) {
+    currentSpeed += 2.0;
+    if (random(0,100) > 94) nitroCount--; 
+    tone(BZ_SFX_2, 2100, 20);
+  }
+
+  currentSpeed = constrain(currentSpeed, 0, MAX_SPEED);
+  long frameDist = (long)currentSpeed;
+  distanceTraveled += frameDist;
+
+  // Steering
+  float steer = (joyX - 512) / 512.0;
+  if (abs(steer) < 0.08) steer = 0; 
+  float steerPower = offRoad ? 0.28 : 0.16; 
+  playerX += steer * ((currentSpeed + 5.0) / (MAX_SPEED + 5.0)) * steerPower;
+
+  // Road Curves
+  distToNextCurve -= frameDist;
+  if (distToNextCurve <= 0) {
+    if (random(0, 3) == 0) {
+      roadCurve = 0;
+      distToNextCurve = random(1000, 2500); 
+    } else {
+      roadCurve = (random(-7, 8) / 100.0);
+      distToNextCurve = random(2000, 4500); 
+    }
+  }
+  currentCurve = currentCurve * 0.99 + roadCurve * 0.01;
+  float pullFactor = offRoad ? 0.1 : 0.45;
+  playerX -= currentCurve * (currentSpeed / 5.0) * pullFactor; 
+  playerX = constrain(playerX, -2.5, 2.5);
+
+  // Checkpoint & Goal Logic
+  if (distanceTraveled >= nextCheckpointDist && nextCheckpointDist < sectorTargetDist) {
+    nuyen += 100;
+    nextCheckpointDist += CHECKPOINT_GAP;
+    state = CHECKPOINT_HIT;
+    stateTimer = millis();
+    playCheckpointSound();
+  }
+
+  if (distanceTraveled >= sectorTargetDist) {
+    state = GOAL;
+    stateTimer = millis();
+  }
+
+  // Rivals
+  bool pLAtk = digitalRead(BTN_L_ATK) == LOW;
+  bool pRAtk = digitalRead(BTN_R_ATK) == LOW;
+  for(int i=0; i<3; i++) {
+    rivals[i].z += (rivals[i].speed - currentSpeed);
+    if (rivals[i].z < 600 && rivals[i].z > -150) {
+      if (rivals[i].x < playerX - 0.1) rivals[i].x += 0.02;
+      else if (rivals[i].x > playerX + 0.1) rivals[i].x -= 0.02;
+      if (abs(rivals[i].z) < 35 && abs(playerX - rivals[i].x) < 0.42 && rivals[i].attackTimer == 0 && random(0, 100) < 5) {
+        rivals[i].attackTimer = 25; playerFlash = 20; currentSpeed -= 5.0; playHitSound();
+      }
+    }
+    if (rivals[i].attackTimer > 0) rivals[i].attackTimer--;
+    if (rivals[i].z < -400) { rivals[i].z = 1500; rivals[i].x = (random(-9, 10) / 10.0); }
+    if (rivals[i].z > 1800) rivals[i].z = -250;
+    if (abs(rivals[i].z) < 40 && abs(playerX - rivals[i].x) < 0.55) {
+       if ((pLAtk && rivals[i].x < playerX) || (pRAtk && rivals[i].x > playerX)) {
+         rivals[i].speed *= 0.6; rivals[i].z -= 20; nuyen += 25; playHitSound();
+       }
+    }
+  }
+}
+
+void drawHUD() {
+  u8g2.setFont(u8g2_font_4x6_tf);
+  u8g2.setCursor(2, 62); u8g2.print("S:"); u8g2.print((int)(currentSpeed * 12));
+  u8g2.drawFrame(35, 58, 60, 5);
+  int prog = map(constrain(distanceTraveled, 0, sectorTargetDist), 0, sectorTargetDist, 0, 58);
+  u8g2.drawBox(36, 59, prog, 3);
+  u8g2.setCursor(98, 62); u8g2.print("N2O:"); u8g2.print(nitroCount);
+}
+
+void drawRoad() {
+  u8g2.drawHLine(0, 22, 128); 
+  for(int i=0; i<20; i++) {
+    int y = 22 + (i * i) / 3.2;
+    int w = i * 8;
+    int xOff = (int)(currentCurve * i * i * 9);
+    int centerX = 64 + xOff;
+    
+    // Checkpoint Gate Visual
+    long distInLoop = (distanceTraveled + (long)(i * 500)) % CHECKPOINT_GAP;
+    if (distInLoop < 500 && i > 10) {
+       u8g2.drawFrame(centerX - w/2 - 5, y - 10, w + 10, 2); // Overpass beam
+    }
+
+    if (((distanceTraveled / 25) + i) % 5 != 0) {
+      u8g2.drawHLine(centerX - w/2, y, w);
+      u8g2.drawPixel(centerX, y);
+    }
+    if (i > 4) {
+      u8g2.drawPixel(centerX - w/2 - 4, y);
+      u8g2.drawPixel(centerX + w/2 + 4, y);
+    }
+  }
+}
+
+void render() {
+  u8g2.firstPage();
+  do {
+    u8g2.setDrawColor(1);
+    if (state == TITLE) {
+      u8g2.setFont(u8g2_font_helvB14_tr);
+      u8g2.drawStr(15, 30, "NEON RASH");
+      u8g2.setFont(u8g2_font_6x10_tf);
+      u8g2.drawStr(22, 50, "PUNCH TO START");
+    } 
+    else if (state == PAUSED) {
+      u8g2.drawFrame(10, 10, 108, 44);
+      u8g2.setFont(u8g2_font_5x7_tf);
+      u8g2.drawStr(22, 25, "DATA-DECK");
+      u8g2.setCursor(22, 36); u8g2.print("SECTOR: "); u8g2.print(currentSector);
+      u8g2.setCursor(22, 46); u8g2.print("NUYEN: "); u8g2.print(nuyen);
+      u8g2.setCursor(22, 56); u8g2.print("GOAL: "); u8g2.print(sectorTargetDist - distanceTraveled);
+    }
+    else if (state == CHECKPOINT_HIT) {
+       u8g2.drawFrame(0, 20, 128, 24);
+       u8g2.setFont(u8g2_font_6x12_tf);
+       u8g2.drawStr(15, 36, "LINK SYNCHRONIZED");
+       u8g2.setFont(u8g2_font_4x6_tf);
+       u8g2.drawStr(40, 42, "+100 NUYEN BONUS");
+    }
+    else if (state == RACING) {
+      drawRoad();
+      for(int i=0; i<3; i++) {
+        if (rivals[i].z > -150 && rivals[i].z < 1500) {
+          int rz = map(constrain(rivals[i].z, 0, 1200), 1200, 0, 22, 60);
+          int rs = ((rz - 22) / 7) + 1;
+          int xOff = (int)(currentCurve * (rz-22) * (rz-22) * 0.08);
+          int rx = 64 + xOff + (rivals[i].x * (rz-22) * 3.6);
+          if (rz > 22 && rz < 68) drawBiker(rx, rz, rs, false, (rivals[i].attackTimer > 0 && rivals[i].x > playerX), (rivals[i].attackTimer > 0 && rivals[i].x < playerX));
+        }
+      }
+      int px = 64 + (playerX * 60);
+      drawBiker(px, 63, 5, true, digitalRead(BTN_L_ATK)==LOW, digitalRead(BTN_R_ATK)==LOW);
+      drawHUD();
+    }
+    else if (state == GOAL) {
+      u8g2.setFont(u8g2_font_helvB10_tr);
+      u8g2.drawStr(10, 30, "SECTOR CLEAN");
+      u8g2.setFont(u8g2_font_5x7_tf);
+      u8g2.setCursor(10, 45); u8g2.print("Advancing to Sector "); u8g2.print(currentSector + 1);
+    }
+    else if (state == SHOP) {
+      u8g2.setFont(u8g2_font_6x10_tf);
+      u8g2.drawStr(25, 15, "CYBER-STORE");
+      u8g2.drawHLine(0, 18, 128);
+      u8g2.setFont(u8g2_font_4x6_tf);
+      u8g2.setCursor(5, 30); u8g2.print("[PAUSE] BEGIN SECTOR "); u8g2.print(currentSector);
+      u8g2.setCursor(5, 40); u8g2.print("[NITRO] N2O TANK (250)");
+      u8g2.setCursor(5, 60); u8g2.print("CREDITS: "); u8g2.print(nuyen);
+    }
+  } while (u8g2.nextPage());
+}
+
+void handleInput() {
+  static unsigned long lastInput = 0;
+
+  if (digitalRead(BTN_PAUSE) == LOW && millis() - lastInput > 400) {
+    if (state == RACING) state = PAUSED;
+    else if (state == PAUSED) state = RACING;
+    else if (state == SHOP) initRace(false);
+    lastInput = millis();
+    tone(BZ_SFX_2, 800, 20);
+  }
+
+  if (state == TITLE) {
+    if (digitalRead(BTN_L_ATK) == LOW || digitalRead(BTN_R_ATK) == LOW) {
+      initRace(true); delay(250);
+    }
+  }
+
+  if (state == CHECKPOINT_HIT) {
+    if (millis() - stateTimer > 1500) state = RACING;
+  }
+
+  if (state == GOAL) {
+    if (millis() - stateTimer > 3000) { 
+      currentSector++;
+      nuyen += 500; 
+      state = SHOP; 
+    }
+  }
+
+  if (state == SHOP) {
+    if (digitalRead(BTN_NITRO) == LOW && nuyen >= 250 && millis() - lastInput > 300) { 
+      nitroCount++; nuyen -= 250; lastInput = millis();
+      tone(BZ_SFX_2, 1000, 50); 
+    }
+  }
+
+  if (state == RACING && digitalRead(STICK_SW) == LOW) playHorn();
+}
+
+void setup() {
+  pinMode(BTN_L_ATK, INPUT_PULLUP);
+  pinMode(BTN_R_ATK, INPUT_PULLUP);
+  pinMode(BTN_NITRO, INPUT_PULLUP);
+  pinMode(BTN_PAUSE, INPUT_PULLUP);
+  pinMode(STICK_SW,  INPUT_PULLUP);
+  u8g2.begin();
+  randomSeed(analogRead(A2));
+}
+
+void loop() {
+  handleInput();
+  if (state == RACING) {
+    updatePhysics();
+    playEngineSound(currentSpeed);
+  } else if (state == CHECKPOINT_HIT) {
+    updatePhysics(); // Keep moving during the flash
+  } else {
+    noTone(BZ_SFX);
+  }
+  render();
+}

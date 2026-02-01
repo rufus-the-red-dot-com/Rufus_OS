@@ -1,0 +1,122 @@
+#include <Arduino.h>
+#include <U8g2lib.h>
+#include <Wire.h>
+
+U8G2_SH1106_128X64_NONAME_1_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+
+// --- PINS ---
+#define PIN_JUMP   10 
+#define STICK_SW   2  
+#define BZ_SFX     3  
+
+// --- TUNED PHYSICS ---
+float bY = 32, bV = 0;      
+float gravity = 0.32;       // Increased for a heavier, snappier feel
+float thrust = -3.4;        // Reduced from -4.2 to prevent "over-boosting"
+int score = 0, highscore = 0;
+bool dead = false;
+bool thrustAnim = false;
+
+struct Gate { float x; int gapY; bool passed; };
+Gate g1 = {128, 32, false};
+Gate g2 = {200, 32, false}; 
+
+void setup() {
+  pinMode(PIN_JUMP, INPUT_PULLUP);
+  pinMode(STICK_SW, INPUT_PULLUP);
+  u8g2.begin();
+}
+
+void resetGame() {
+  bY = 32; bV = 0; score = 0;
+  g1 = {128, random(20, 44), false};
+  g2 = {200, random(20, 44), false};
+  dead = false;
+}
+
+void drawRider(int y) {
+  // Micro-Bike (6 pixels long)
+  u8g2.drawHLine(15, y, 6); 
+  u8g2.drawPixel(20, y-1); 
+  u8g2.drawDisc(16, y+2, 1);
+  u8g2.drawDisc(19, y+2, 1);
+  
+  if (thrustAnim) {
+    u8g2.drawHLine(10, y, 4);
+    u8g2.drawPixel(11, y-1);
+    u8g2.drawPixel(11, y+1);
+  }
+}
+
+void drawGate(Gate &g) {
+  u8g2.drawBox(g.x, 0, 4, g.gapY - 15);         
+  u8g2.drawBox(g.x, g.gapY + 15, 4, 64);      
+  u8g2.drawHLine(g.x - 1, g.gapY - 15, 6); 
+  u8g2.drawHLine(g.x - 1, g.gapY + 15, 6);
+}
+
+void loop() {
+  if (!dead) {
+    // 1. PHYSICS UPDATE
+    thrustAnim = false;
+    if (digitalRead(PIN_JUMP) == LOW) {
+      bV = thrust;
+      thrustAnim = true;
+      tone(BZ_SFX, 800, 5); 
+    }
+    bV += gravity;
+    bY += bV;
+
+    // 2. MOVEMENT
+    float gameSpeed = 2.5 + (score * 0.04); 
+    g1.x -= gameSpeed; g2.x -= gameSpeed;
+    
+    if (g1.x < -10) { g1.x = 130; g1.gapY = random(20, 44); g1.passed = false; }
+    if (g2.x < -10) { g2.x = 130; g2.gapY = random(20, 44); g2.passed = false; }
+
+    // 3. COLLISION
+    if (bY < 0 || bY > 62) dead = true;
+    
+    // Pillar Hitboxes (Adjusted for smaller bike)
+    if (g1.x < 21 && g1.x > 12) {
+      if (bY < g1.gapY - 15 || bY > g1.gapY + 13) dead = true;
+    }
+    if (g2.x < 21 && g2.x > 12) {
+      if (bY < g2.gapY - 15 || bY > g2.gapY + 13) dead = true;
+    }
+
+    // 4. SCORING
+    if (g1.x < 12 && !g1.passed) { score++; g1.passed = true; tone(BZ_SFX, 1500, 5); }
+    if (g2.x < 12 && !g2.passed) { score++; g2.passed = true; tone(BZ_SFX, 1500, 5); }
+    
+    if (dead) {
+       tone(BZ_SFX, 100, 150);
+       if(score > highscore) highscore = score;
+    }
+  } else {
+    if (digitalRead(STICK_SW) == LOW) resetGame();
+  }
+
+  u8g2.firstPage();
+  do {
+    // Parallax background
+    for(int i=0; i<4; i++) {
+      int px = (128 + (i*40) - (int)(millis()/200) % 128);
+      u8g2.drawPixel(px, 10 + (i*15));
+    }
+
+    drawGate(g1);
+    drawGate(g2);
+    drawRider(bY);
+
+    u8g2.setFont(u8g2_font_u8glib_4_tf);
+    u8g2.setCursor(2, 63); u8g2.print("HI:"); u8g2.print(highscore);
+    u8g2.setCursor(105, 63); u8g2.print(score);
+
+    if (dead) {
+      u8g2.drawFrame(25, 22, 78, 20);
+      u8g2.setDrawColor(0); u8g2.drawBox(26, 23, 76, 18); u8g2.setDrawColor(1);
+      u8g2.setFont(u8g2_font_6x12_tf); u8g2.drawStr(34, 34, "CRASHED");
+    }
+  } while ( u8g2.nextPage() );
+}

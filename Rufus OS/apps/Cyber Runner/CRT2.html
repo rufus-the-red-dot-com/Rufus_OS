@@ -1,0 +1,1077 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CyberRunner v5.3.0</title>
+    <style>
+        /* --- Root Variables for Theming --- */
+        :root {
+            --primary-color: #00ffff;
+            --danger-color: #ff4136;
+            --warning-color: #f1c40f;
+            --background-color: #000;
+            --text-color: #e0e0e0;
+            --dark-grey: #2d3436;
+            --light-grey: #485460;
+            --elite-color: #f39c12;
+            --bounty-color: #e84393;
+            --player-color: #0074D9;
+            --ice-color: #ff00ff;
+            --construction-color: #ff9f43;
+            --corporate-color: #ecf0f1;
+            --success-color: #2ecc71;
+            --deep-blue: #1e253a;
+            --construction-yellow: #ff9f43;
+            --casino-green: #00ff41;
+            --casino-green-dark: #002a0a;
+            --casino-green-glow: rgba(0, 255, 65, 0.2);
+        }
+
+        /* --- Base Styles --- */
+        html, body {
+            margin: 0;
+            padding: 0;
+            background-color: var(--background-color);
+            color: var(--text-color);
+            font-family: 'Courier New', Courier, monospace;
+            overflow: hidden;
+            width: 100%;
+            height: 100%;
+        }
+
+        /* --- Game Canvases --- */
+        .canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+            position: absolute;
+            top: 0;
+            left: 0;
+            background-color: transparent;
+            image-rendering: pixelated; 
+        }
+        #introCanvas { z-index: 200; background-color: #080810; position: fixed; }
+        #gameCanvas { z-index: 1; display: block; background-color: var(--background-color); }
+
+        /* --- Casino UI Overlay --- */
+        #casino-ui { 
+            display: none; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); 
+            width: 500px; background: rgba(10, 15, 10, 0.95); border: 3px double var(--casino-green); 
+            padding: 30px; text-align: center; z-index: 100; box-shadow: 0 0 30px var(--casino-green-glow);
+            pointer-events: auto;
+        }
+        .card-zone { display: flex; justify-content: center; gap: 10px; margin: 20px 0; min-height: 100px; }
+        .card { background: #111; border: 2px solid var(--casino-green); color: var(--casino-green); width: 60px; height: 90px; display: flex; align-items: center; justify-content: center; font-size: 24px; font-weight: bold; border-radius: 5px; }
+        .casino-btn { background: transparent; border: 1px solid var(--casino-green); color: var(--casino-green); padding: 10px 20px; cursor: pointer; font-family: inherit; margin: 5px; font-weight: bold; }
+        .casino-btn:hover { background: var(--casino-green); color: #000; }
+        .casino-btn:disabled { border-color: #004411; color: #004411; cursor: default; }
+
+        /* --- Intro & Start Screens --- */
+        #intro-overlay {
+            position: fixed;
+            top: 0; left: 0; width: 100%; height: 100%;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            background-color: rgba(0, 0, 0, 0.7);
+            z-index: 210;
+            cursor: pointer;
+        }
+        #startButton, #startGameButton, #skipIntroButton, #startNoDebtButton, #loadGameButton {
+            padding: 15px 30px;
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 20px;
+            color: #00ffcc;
+            background: #111;
+            border: 2px solid #00ffcc;
+            border-radius: 8px;
+            text-shadow: 0 0 10px #00ffcc;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            margin: 10px;
+        }
+        #startButton:hover, #startGameButton:hover, #skipIntroButton:hover, #startNoDebtButton:hover, #loadGameButton:hover {
+            background: #00ffcc;
+            color: #111;
+            box-shadow: 0 0 20px #00ffcc;
+        }
+        #skipIntroButton { border-color: var(--warning-color); color: var(--warning-color); }
+        #skipIntroButton:hover { background: var(--warning-color); color: #111; box-shadow: 0 0 20px var(--warning-color); }
+        #startNoDebtButton { border-color: var(--success-color); color: var(--success-color); }
+        #startNoDebtButton:hover { background: var(--success-color); color: #111; box-shadow: 0 0 20px var(--success-color); }
+        #loadCodeInput {
+            margin-top: 20px;
+            padding: 10px;
+            width: 80%;
+            max-width: 400px;
+            background: #222;
+            border: 1px solid var(--primary-color);
+            color: var(--primary-color);
+            font-family: 'Courier New', Courier, monospace;
+            text-align: center;
+        }
+        
+        #game-start-container {
+            display: none;
+            position: fixed;
+            bottom: 10%;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 220;
+            pointer-events: auto;
+        }
+
+        /* --- Terminal Jack-in Animation --- */
+        #terminal-animation-container {
+            position: fixed;
+            top: 0; left: 0; width: 100%; height: 100%;
+            z-index: 300;
+            display: none;
+            background-color: #000;
+        }
+        #matrix-canvas { z-index: 301; }
+        #text-overlay {
+            position: absolute;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            z-index: 302;
+            font-size: 1.5em;
+            text-shadow: 0 0 8px #00ff41, 0 0 15px #00ff41;
+            opacity: 0;
+            transition: opacity 1s ease-in-out;
+            text-align: left;
+            width: 80%;
+            max-width: 800px;
+            color: #00ff41;
+        }
+        #log-container { display: flex; flex-direction: column; justify-content: center; height: 100%; }
+        .log-line { margin-bottom: 0.5em; }
+        .cursor {
+            display: inline-block;
+            width: 1ch;
+            height: 1.2em;
+            background-color: #00ff41;
+            animation: blink 1s step-end infinite;
+            box-shadow: 0 0 10px #00ff41;
+            vertical-align: bottom;
+        }
+        @keyframes blink {
+            from, to { background-color: transparent }
+            50% { background-color: #00ff41; }
+        }
+
+        /* --- Main Game UI (HUD) --- */
+        #ui-overlay {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            pointer-events: none;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            padding: 15px;
+            padding-top: 70px; 
+            box-sizing: border-box;
+            z-index: 10;
+        }
+        .hud { display: flex; justify-content: space-between; align-items: flex-start; text-shadow: 2px 2px 2px #000; color: #fff; }
+        .hud-left { width: 40%; max-width: 350px; }
+        .hud-right { text-align: right; font-size: 1.5em; line-height: 1.4; }
+        .stat-bar-container { margin-bottom: 10px; }
+        .stat-bar-label { font-size: 1.1em; margin-bottom: 4px; display: flex; justify-content: space-between; }
+        #weapon-display { font-size: 0.8em; color: var(--warning-color); }
+        .stat-bar { width: 100%; height: 20px; background-color: var(--dark-grey); border: 1px solid var(--light-grey); padding: 2px; box-sizing: border-box; }
+        .stat-bar-inner { height: 100%; transition: width 0.3s ease-out; }
+        #health-bar-inner { background-color: var(--danger-color); }
+        #xp-bar-inner { background-color: var(--primary-color); }
+        #quest-display { position: absolute; bottom: 40px; left: 50%; transform: translateX(-50%); background-color: rgba(0,0,0,0.7); padding: 5px 10px; border: 1px solid var(--warning-color); color: var(--warning-color); text-align: center; max-width: 70%; font-size: 0.9em; display: none; }
+        #controls-display { text-shadow: 2px 2px 2px #000; color: #fff; font-size: 0.9em; text-align: center; width: 100%; }
+        .message-box { position: absolute; bottom: 20%; left: 50%; transform: translateX(-50%); background-color: rgba(0, 0, 0, 0.85); color: #00ff00; border: 2px solid #00ff00; padding: 15px 25px; border-radius: 5px; text-align: center; opacity: 0; transition: opacity 0.5s; box-shadow: 0 0 10px #00ff00; z-index: 100; max-width: 80%; }
+        
+        /* --- Game Over Screen --- */
+        #game-over-screen { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.9); color: var(--danger-color); display: none; flex-direction: column; justify-content: center; align-items: center; text-align: center; z-index: 50; pointer-events: auto; }
+        #game-over-screen h1 { font-size: 4em; text-shadow: 3px 3px 0 #000; margin: 0; }
+        #game-over-screen p { color: var(--text-color); font-size: 1.2em; margin: 20px 0; }
+        #continue-button { background-color: var(--primary-color); color: black; border: none; padding: 15px 30px; font-family: 'Courier New', Courier, monospace; font-size: 1.5em; cursor: pointer; }
+        #continue-button:disabled { background-color: var(--dark-grey); color: var(--light-grey); cursor: not-allowed; }
+        .restart-message { display: none; color: var(--warning-color); margin-top: 20px; }
+        
+        /* --- Vendor UI --- */
+        .vendor-ui { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background-color: rgba(20,20,20,0.98); border: 2px solid var(--warning-color); padding: 0; text-align: center; display: none; pointer-events: auto; width: 450px; z-index: 20; }
+        .vendor-tabs { display: flex; border-bottom: 2px solid var(--warning-color); }
+        .vendor-tab { flex: 1; padding: 10px; cursor: pointer; background: var(--dark-grey); color: var(--light-grey); }
+        .vendor-tab.active { background: var(--warning-color); color: black; }
+        .vendor-content { padding: 20px; }
+        .vendor-item-list { max-height: 300px; overflow-y: auto; text-align: left; }
+        .vendor-item-list-pane { display: none; }
+        .vendor-item-list-pane.active { display: block; }
+        .vendor-item { background-color: var(--dark-grey); border: 1px solid var(--light-grey); padding: 10px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; }
+        .vendor-item-info h3 { margin: 0 0 5px 0; color: var(--primary-color); }
+        .vendor-item-info p { margin: 0; font-size: 0.8em; }
+        .vendor-buy-button { background-color: var(--warning-color); border: 2px solid #d35400; color: black; padding: 10px 15px; font-family: 'Courier New', Courier, monospace; cursor: pointer; flex-shrink: 0; margin-left: 15px; }
+        .vendor-buy-button:hover { background-color: #ffc300; }
+        .vendor-buy-button:disabled { background-color: #555; color: #999; border-color: #333; cursor: not-allowed; }
+        .vendor-close-button { background-color: var(--light-grey); border: 1px solid var(--dark-grey); color: white; padding: 10px 15px; font-family: 'Courier New', Courier, monospace; cursor: pointer; display: block; width: 100%; margin-top: 20px; }
+        
+        /* --- Top Right Controls --- */
+        #top-right-controls { position: absolute; top: 15px; right: 15px; z-index: 15; pointer-events: none; display: flex; gap: 10px; align-items: flex-start; }
+        #fullscreen-btn { position: static; background: rgba(0,0,0,0.5); border: 1px solid var(--primary-color); color: var(--primary-color); cursor: pointer; pointer-events: auto; width: 40px; height: 40px; padding: 4px; border-radius: 5px; display: flex; justify-content: center; align-items: center; transition: background-color 0.2s; }
+        #audio-controls-wrapper { position: relative; pointer-events: auto; }
+        #mute-btn { position: relative; background: rgba(0,0,0,0.5); border: 1px solid var(--primary-color); color: var(--primary-color); cursor: pointer; width: 40px; height: 40px; padding: 4px; border-radius: 5px; display: flex; justify-content: center; align-items: center; transition: background-color 0.2s; }
+        #extended-audio-controls { visibility: hidden; opacity: 0; position: absolute; top: 100%; right: 0; margin-top: 5px; padding: 10px; background: rgba(45, 52, 54, 0.9); border: 1px solid var(--primary-color); border-radius: 5px; display: flex; flex-direction: column; align-items: center; gap: 8px; transition: opacity 0.2s, visibility 0.2s; }
+        #audio-controls-wrapper:hover #extended-audio-controls { visibility: visible; opacity: 1; }
+        #fullscreen-btn svg, #mute-btn svg, #next-track-btn svg { stroke: var(--primary-color); transition: stroke 0.2s; }
+        #fullscreen-btn:hover, #mute-btn:hover, #next-track-btn:hover { background-color: var(--primary-color); }
+        #fullscreen-btn:hover svg, #mute-btn:hover svg, #next-track-btn:hover svg { stroke: black; }
+        #next-track-btn { background: transparent; border: 1px solid var(--primary-color); color: var(--primary-color); width: 32px; height: 32px; padding: 4px; border-radius: 5px; display: flex; justify-content: center; align-items: center; cursor: pointer; }
+        #volume-slider { -webkit-appearance: none; appearance: none; width: 100px; height: 8px; background: var(--dark-grey); outline: none; border-radius: 4px; cursor: pointer; }
+        #volume-slider::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 16px; height: 16px; background: var(--primary-color); cursor: pointer; border-radius: 50%; }
+        #volume-slider::-moz-range-thumb { width: 16px; height: 16px; background: var(--primary-color); cursor: pointer; border-radius: 50%; border: none; }
+
+        /* --- Dialogue UI --- */
+        #dialog-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); z-index: 39; display: none; pointer-events: auto; }
+        #dialog-box { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: transparent; border: none; display: none; flex-direction: row; padding: 5vw; box-sizing: border-box; z-index: 40; pointer-events: auto; align-items: center; }
+        #dialog-portrait { width: 40vw; height: 80vh; background: #000; border: 1px solid var(--primary-color); flex-shrink: 0; }
+        #dialog-main-content { flex: 1; padding-left: 5vw; display: flex; flex-direction: column; overflow: hidden; height: 80vh; }
+        #dialog-speaker { color: var(--warning-color); font-size: 2em; margin-bottom: 20px; }
+        #dialog-text { flex-grow: 1; font-size: 1.5em; line-height: 1.6; color: var(--text-color); overflow-y: auto; }
+        #dialog-prompt { text-align: right; font-size: 1em; color: var(--warning-color); animation: blink 1.5s infinite; }
+        #dialog-options { display: flex; flex-direction: column; gap: 10px; margin-top: 20px; }
+        .dialog-option-button { background: var(--dark-grey); border: 1px solid var(--primary-color); color: var(--primary-color); padding: 10px; text-align: left; cursor: pointer; width: 100%; transition: all 0.2s ease; font-size: 1.2em; }
+        .dialog-option-button:hover, .dialog-option-button.selected { background: var(--primary-color); color: black; box-shadow: 0 0 10px var(--primary-color); }
+        
+        /* --- Battle UI --- */
+        #rpg-battle-container { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: #050505; display: none; flex-direction: column; pointer-events: auto; z-index: 30; }
+        #battle-scene { flex-grow: 1; position: relative; display: flex; justify-content: space-around; align-items: center;}
+        .battle-entity { position: static; transform: none; width: 200px; text-align: center; }
+        #battle-player-sprite, #battle-ice-sprite { width: 200px; height: 200px; image-rendering: pixelated; }
+        .battle-entity-name { font-size: 1.2em; text-shadow: 0 0 5px; }
+        #battle-player .battle-entity-name { color: var(--player-color); }
+        #battle-ice .battle-entity-name { color: var(--ice-color); }
+        .battle-health-bar-container { height: 20px; background: var(--dark-grey); border: 1px solid var(--light-grey); padding: 2px; margin-top: 10px; }
+        .battle-health-bar { height: 100%; width: 100%; transition: width 0.5s ease-out; }
+        #battle-player-health { background: var(--player-color); }
+        #battle-ice-health { background: var(--ice-color); }
+        #battle-log-container { height: 80px; background: rgba(0,0,0,0.5); border-top: 1px solid var(--primary-color); border-bottom: 1px solid var(--primary-color); padding: 10px; box-sizing: border-box; color: var(--primary-color); font-style: italic; }
+        #battle-log-text::after { content: '_'; animation: blink 1s infinite; }
+        #battle-actions-container { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 20px; }
+        #battle-actions-container button { background-color: #001f3f; border: 1px solid var(--player-color); color: var(--player-color); padding: 15px; font-family: 'Courier New', Courier, monospace; cursor: pointer; font-size: 1.1em; transition: all 0.2s; }
+        #battle-actions-container button:hover:not(:disabled) { background-color: var(--player-color); color: black; box-shadow: 0 0 10px var(--player-color); }
+        #battle-actions-container button:disabled { background-color: #333; color: #888; border-color: #555; cursor: not-allowed; }
+        
+        /* --- Keyboard Navigation Highlight --- */
+        .selected {
+            border: 2px solid var(--primary-color) !important;
+            box-shadow: 0 0 15px var(--primary-color) !important;
+        }
+
+    </style>
+</head>
+<body>
+    <div id="intro-overlay">
+        <button id="startButton">Start Intro</button>
+        <button id="skipIntroButton">Skip Intro & Start Game</button>
+        <button id="startNoDebtButton">Start (No Debt - Test)</button>
+        <input type="text" id="loadCodeInput" placeholder="Enter Save Code...">
+        <button id="loadGameButton">Load Game</button>
+    </div>
+
+    <div id="world-intro-cutscene-container">
+        <div class="scene-container">
+            <div class="scene scene-1 active">
+                <div class="corp-tower tower-1"></div>
+                <div class="corp-tower tower-2"></div>
+                <div class="corp-tower tower-3"></div>
+                <div class="flying-vehicle"></div>
+                <div class="flying-vehicle far"></div>
+                <div class="cutscene-text"><p>Up there, in the Corporate Plaza, they pull the strings. They took everything from me. My past, my future. Left me with nothing but a name... Rufus.</p><div class="cutscene-prompt">[E] Continue</div></div>
+            </div>
+            <div class="scene scene-2">
+                <div class="crane"></div>
+                <div class="unfinished-building"></div>
+                <div class="cutscene-text"><p>The city is a scar, constantly being rebuilt for the rich. The Construction Zone... a graveyard of old promises, guarded by their automated sentinels.</p><div class="cutscene-prompt">[E] Continue</div></div>
+            </div>
+            <div class="scene scene-3">
+                <div class="cz-fence"></div>
+                <div class="cz-warning-sign"></div>
+                <div class="cutscene-text"><p>Then there's the Containment Zone. A true dead end. They say the air itself is toxic. A place I know all too well... a place I never wanted to see again.</p><div class="cutscene-prompt">[E] Continue</div></div>
+            </div>
+            <div class="scene scene-4">
+                <div class="slum-building slum-3"></div>
+                <div class="slum-building slum-1"></div>
+                <div class="slum-building slum-2">
+                    <div class="neon-sign sign-1">CHROME</div>
+                </div>
+                <div class="cutscene-text"><p>And at the bottom of it all, you hit the Slums. A maze of rust and rain where everyone is running from something. For me, it's a mountain of debt that gets bigger every day.</p><div class="cutscene-prompt">[E] Continue</div></div>
+            </div>
+            <div class="scene scene-5">
+                <div class="chrome-arm"></div>
+                <div id="spark-container"></div>
+                <div class="cutscene-text"><p>To survive, you trade away parts of yourself. Flesh for chrome. A new eye to see the angles, a subdermal plate to stop a bullet. Each piece a reminder of what you've lost.</p><div class="cutscene-prompt">[E] Continue</div></div>
+            </div>
+            <div class="scene scene-6">
+                <div class="deal-background">
+                    <div class="silhouette silhouette-1"></div>
+                    <div class="silhouette silhouette-2"></div>
+                </div>
+                <div class="deal">
+                    <div class="datachip"></div>
+                </div>
+                <div class="cutscene-text"><p>Down here, information is the only currency that matters more than nuyen. A datastick can be a lifeline... or a death sentence. It's how I'll get my start.</p><div class="cutscene-prompt">[E] Continue</div></div>
+            </div>
+            <div class="scene scene-7">
+                <div class="grid-line h gl1"></div><div class="grid-line h gl2"></div><div class="grid-line h gl3"></div><div class="grid-line h gl4"></div>
+                <div class="grid-line v gl5"></div><div class="grid-line v gl6"></div><div class="grid-line v gl7"></div>
+                <div class="ice-construct"></div>
+                <div class="cutscene-text"><p>And then there's the other world. The Matrix. A river of pure data, guarded by killer programs. They call it Black ICE. I call it an opportunity.</p><div class="cutscene-prompt">[E] Continue</div></div>
+            </div>
+            <div class="scene scene-8">
+                <div class="city-silhouette"></div>
+                <div class="runner-silhouette"></div>
+                <div class="cutscene-text"><p>They think I'm just another piece of static in their perfect system. Another ghost in their machine. But they're wrong. My name is Rufus, and I'm not just a runner. I'm the glitch they can't erase.</p><div class="cutscene-prompt">[E] Continue</div></div>
+            </div>
+        </div>
+    </div>
+
+    <canvas id="introCanvas" class="canvas" style="display:none;"></canvas>
+    <div id="game-start-container">
+        <button id="startGameButton">Start Game</button>
+    </div>
+
+    <div id="terminal-animation-container">
+        <canvas id="matrix-canvas" class="canvas"></canvas>
+        <div id="text-overlay">
+            <div id="log-container"></div>
+            <span id="final-text"></span><span id="cursor" class="cursor" style="display: none;"></span>
+        </div>
+    </div>
+
+    <div id="game-container" style="display: none;">
+        <canvas id="gameCanvas" class="canvas"></canvas>
+        <div id="ui-overlay">
+            <div class="hud">
+                <div class="hud-left">
+                    <div class="stat-bar-container">
+                        <div class="stat-bar-label">
+                            <span>HEALTH</span>
+                            <span id="weapon-display">PISTOL</span>
+                        </div>
+                        <div class="stat-bar"><div id="health-bar-inner" class="stat-bar-inner"></div></div>
+                    </div>
+                     <div class="stat-bar-container">
+                        <div class="stat-bar-label">XP</div>
+                        <div class="stat-bar"><div id="xp-bar-inner" class="stat-bar-inner"></div></div>
+                    </div>
+                    <div style="margin-top:5px; color:var(--warning-color); font-size: 1.1em;">DEBT: <span id="debt-display">5000</span>¥</div>
+                </div>
+                 <div class="hud-right">
+                    <span id="level-display">LVL: 1</span>
+                    <span id="nuyen-display">NUYEN: 0¥</span>
+                </div>
+            </div>
+            <div id="quest-display"></div>
+            <div id="controls-display"></div>
+        </div>
+
+        <div id="casino-ui">
+            <h1 style="color:var(--casino-green); margin-top:0;">RED VELVET CASINO</h1>
+            <div id="casino-msg">PLACE YOUR BET: 100¥</div>
+            <div style="font-size:0.7em; margin-top:10px; opacity:0.6;">DEALER HAND</div>
+            <div class="card-zone" id="d-cards"></div>
+            <div style="font-size:0.7em; opacity:0.6;">YOUR HAND</div>
+            <div class="card-zone" id="p-cards"></div>
+            <div id="casino-actions">
+                <button id="bet-btn" class="casino-btn" onclick="casinoDeal()">[E] DEAL 100¥</button>
+                <button id="hit-btn" class="casino-btn" onclick="casinoHit()" style="display:none;">[H] HIT</button>
+                <button id="stay-btn" class="casino-btn" onclick="casinoStay()" style="display:none;">[S] STAY</button>
+                <button class="casino-btn" onclick="exitCasino()">[Q] EXIT</button>
+            </div>
+        </div>
+
+        <div id="top-right-controls">
+            <div id="audio-controls-wrapper">
+                <button id="mute-btn" title="Toggle Mute">
+                    <svg class="icon-unmuted" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"></path></svg>
+                    <svg class="icon-muted" style="display: none;" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><line x1="23" y1="9" x2="17" y2="15"></line><line x1="17" y1="9" x2="23" y2="15"></line></svg>
+                </button>
+                <div id="extended-audio-controls">
+                    <input type="range" id="volume-slider" min="0" max="1" step="0.01" value="0.2">
+                    <button id="next-track-btn" title="Next Track">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 4 15 12 5 20 5 4"></polygon><line x1="19" y1="5" x2="19" y2="19"></line></svg>
+                    </button>
+                </div>
+            </div>
+            <button id="fullscreen-btn" title="Toggle Fullscreen">
+                 <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
+            </button>
+        </div>
+        <div id="message-box" class="message-box"></div>
+        
+        <div id="game-over-screen">
+            <h1>FLATLINED</h1>
+            <p>Your vitals have ceased. A backup trauma system can revive you... for a price.</p>
+            <button id="continue-button">Continue (1000¥)</button>
+            <p class="restart-message">Not enough nuyen. Refresh to run again.</p>
+        </div>
+        
+        <div id="main-vendor-ui" class="vendor-ui">
+            <div class="vendor-tabs">
+                <div class="vendor-tab active" data-tab="arms">Arms</div>
+                <div class="vendor-tab" data-tab="cyber">Cyberware</div>
+                <div class="vendor-tab" data-tab="network">Network</div>
+            </div>
+            <div class="vendor-content">
+                 <div id="vendor-list-arms" class="vendor-item-list-pane active"></div>
+                 <div id="vendor-list-cyber" class="vendor-item-list-pane"></div>
+                 <div id="vendor-list-network" class="vendor-item-list-pane"></div>
+                 <button class="vendor-close-button">Leave</button>
+            </div>
+        </div>
+        
+        <div id="dialog-overlay"></div>
+        <div id="dialog-box">
+            <canvas id="dialog-portrait"></canvas>
+            <div id="dialog-main-content">
+                <div id="dialog-speaker"></div>
+                <div id="dialog-text"></div>
+                <div id="dialog-options"></div>
+                <div id="dialog-prompt">[E] Continue</div>
+            </div>
+        </div>
+
+        <div id="rpg-battle-container">
+            <canvas id="battle-scene-canvas" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; pointer-events: none;"></canvas>
+            <div id="battle-scene" style="position: relative; z-index: 2; flex-grow: 1;">
+                <div id="battle-player" class="battle-entity">
+                    <div class="battle-entity-name">DECK</div>
+                    <div class="battle-health-bar-container">
+                        <div id="battle-player-health" class="battle-health-bar"></div>
+                    </div>
+                </div>
+                <div id="battle-ice" class="battle-entity">
+                    <div class="battle-entity-name">ICE</div>
+                    <div class="battle-health-bar-container">
+                        <div id="battle-ice-health" class="battle-health-bar"></div>
+                    </div>
+                </div>
+            </div>
+            <div id="battle-log-container">
+                <span id="battle-log-text"></span>
+            </div>
+            <div id="battle-actions-container">
+                <button data-action="attack">Attack</button>
+                <button data-action="firewall">Firewall</button>
+                <button data-action="debug">Debug</button>
+                <button data-action="flee">Flee</button>
+            </div>
+        </div>
+
+        <div id="status-menu-overlay">
+            <div id="status-menu-panel">
+                <div class="status-menu-header">
+                    <h2>SYSTEM STATUS</h2>
+                    <span class="close-prompt">[R] TO CLOSE</span>
+                </div>
+                <div id="status-section-main" class="status-section">
+                    <h3>// RUNNER INFO</h3>
+                    <div class="status-grid">
+                        <span>Level:</span> <span id="status-level"></span>
+                        <span>Health:</span> <span id="status-health"></span>
+                        <span>Nuyen:</span> <span id="status-nuyen"></span>
+                        <span>Debt:</span> <span id="status-debt"></span>
+                    </div>
+                    <h3 style="margin-top: 20px;">// EQUIPMENT</h3>
+                    <ul id="equipment-list" class="equipment-list"></ul>
+                    <h3 style="margin-top: 20px;">// CYBERWARE</h3>
+                    <ul id="cyberware-list" class="equipment-list"></ul>
+                </div>
+                <div id="quest-log-section" class="status-section">
+                    <h3>// JOB LOG</h3>
+                    <div id="active-quests" class="quest-list"></div>
+                    <h3 style="margin-top: 20px;">// COMPLETED</h3>
+                    <div id="completed-quests" class="quest-list"></div>
+                </div>
+                <div class="status-menu-footer">
+                    <button id="saveGameButton">Save Game</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="save-code-modal">
+            <div id="save-code-box">
+                <h3>SAVE CODE</h3>
+                <p>Copy this code to save your progress.</p>
+                <textarea id="saveCodeTextarea" readonly></textarea>
+                <button id="copySaveCodeButton">Copy to Clipboard</button>
+                <button id="closeSaveModalButton">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="first-kill-cutscene-container">
+        <div class="scene-container">
+            <div class="scene scene-1 active">
+                <div class="rain r1"></div><div class="rain r2"></div><div class="rain r3"></div>
+                <div class="fallen-silhouette"></div>
+                <div class="cutscene-text"><p><span class="narration-text">The first one is always the hardest. You watch the light fade from their eyes and wonder... what's the difference between them and me? A few nuyen? A bit of luck?</span></p><div class="cutscene-prompt">[E] Continue</div></div>
+            </div>
+            <div class="scene scene-2">
+                <div class="glitch-effect"></div>
+                <div class="ice-text">FATAL_ERROR</div>
+                <div class="cutscene-text"><p><span class="narration-text">My luck almost ran out last week. Some new corpo ICE, a firewall I'd never seen. It fried my datajack, turned my world to static. I was lucky I wasn't geeked right then and there.</span></p><div class="cutscene-prompt">[E] Continue</div></div>
+            </div>
+            <div class="scene scene-3">
+                <div class="hand hand-jake"></div>
+                <div class="hand hand-rufus"></div>
+                <div class="datajack"></div>
+                <div class="cutscene-text"><p><span class="narration-text">Jake got me a new jack. A back-alley special. Now I owe him a thousand nuyen I don't have. He wasn't smiling when he made the deal.</span></p><div class="cutscene-prompt">[E] Continue</div></div>
+            </div>
+            <div class="scene scene-4">
+                <div class="nuyen-chip"></div>
+                <div class="cutscene-text"><p><span class="narration-text">This is the price of a life. Not enough to pay off my debt. Not enough to get out. Just enough to keep running.</span></p><div class="cutscene-prompt">[E] Continue</div></div>
+            </div>
+            <div class="scene scene-5">
+                <div class="head-silhouette">
+                    <div class="jack-port"></div>
+                </div>
+                <div class="cutscene-text"><p><span class="narration-text">This port is a constant reminder. A hole in my head where the lightning almost got in. A promise I made in a dark room, sealed with cheap chrome and desperation.</span></p><div class="cutscene-prompt">[E] Continue</div></div>
+            </div>
+            <div class="scene scene-6">
+                <div class="puddle-reflection"></div>
+                <div class="cutscene-text"><p><span class="narration-text">Sometimes, in the reflection of the rain-slicked streets, I don't recognize the face staring back. Is it me? Or just the ghost of who I used to be?</span></p><div class="cutscene-prompt">[E] Continue</div></div>
+            </div>
+            <div class="scene scene-7">
+                 <div class="city-silhouette"></div>
+                <div class="cutscene-text"><p><span class="narration-text">This city... it chews you up and spits you out. A concrete beast that feeds on dreams. You either become a monster to survive, or you become meat.</span></p><div class="cutscene-prompt">[E] Continue</div></div>
+            </div>
+            <div class="scene scene-8">
+                <div class="runner-pov">
+                    <div class="hand-pov hand-left"></div>
+                    <div class="hand-pov hand-right"></div>
+                </div>
+                <div class="cutscene-text"><p><span class="narration-text">So now I'm here. Taking a life to save my own. One down... how many more until I'm square? Until I'm free? Or until I'm the one lying in the rain?</span></p><div class="cutscene-prompt">[E] Continue</div></div>
+            </div>
+        </div>
+    </div>
+    
+    <audio id="introAudio" src="https://storage.googleapis.com/udio-artifacts-c33fe3ba-3ffe-471f-92c8-5dfef90b3ea3/samples/d466f3b9fb574fd2bea9be4667272b8a/1/The%2520Untitled.mp3" preload="auto"></audio>
+    <audio id="worldIntroAudio" src="https://storage.googleapis.com/udio-artifacts-c33fe3ba-3ffe-471f-92c8-5dfef90b3ea3/samples/d4d2a5e707314b069a2cab3c37f4a411/1/The%2520Untitled.mp3" preload="auto"></audio>
+    <audio id="cutsceneAudio" src="https://storage.googleapis.com/udio-artifacts-c33fe3ba-3ffe-471f-92c8-5dfef90b3ea3/samples/29e780aab80244f7bb08888ae02e0c91/1/The%2520Untitled.mp3" preload="auto"></audio>
+    <audio id="bgm1" src="https://storage.googleapis.com/udio-artifacts-c33fe3ba-3ffe-471f-92c8-5dfef90b3ea3/samples/70038bb6b2fe4082ba96c84e38a7df0d/1/The%2520Untitled.mp3"></audio>
+    <audio id="bgm2" src="https://storage.googleapis.com/udio-artifacts-c33fe3ba-3ffe-471f-92c8-5dfef90b3ea3/samples/70038bb6b2fe4082ba96c84e38a7df0d/2/The%2520Untitled.mp3"></audio>
+    <audio id="bgm3" src="https://storage.googleapis.com/udio-artifacts-c33fe3ba-3ffe-471f-92c8-5dfef90b3ea3/samples/9f7493ffc2dc4a20bf414edad731769c/1/The%2520Untitled.mp3"></audio>
+    <audio id="bgm4" src="https://storage.googleapis.com/udio-artifacts-c33fe3ba-3ffe-471f-92c8-5dfef90b3ea3/samples/9f7493ffc2dc4a20bf414edad731769c/2/The%2520Untitled.mp3"></audio>
+    <audio id="bgm5" src="https://storage.googleapis.com/udio-artifacts-c33fe3ba-3ffe-471f-92c8-5dfef90b3ea3/samples/6fb2d2a30853454d9451156791edf565/1/The%2520Untitled.mp3"></audio>
+    <audio id="bgm6" src="https://storage.googleapis.com/udio-artifacts-c33fe3ba-3ffe-471f-92c8-5dfef90b3ea3/samples/6fb2d2a30853454d9451156791edf565/2/The%2520Untitled.mp3"></audio>
+    <audio id="bgm7" src="https://storage.googleapis.com/udio-artifacts-c33fe3ba-3ffe-471f-92c8-5dfef90b3ea3/samples/b7f2f3c5a3314558a379dd572f784874/1/The%2520Untitled.mp3"></audio>
+    <audio id="bgm8" src="https://storage.googleapis.com/udio-artifacts-c33fe3ba-3ffe-471f-92c8-5dfef90b3ea3/samples/b7f2f3c5a3314558a379dd572f784874/2/The%2520Untitled.mp3"></audio>
+    <audio id="bgm9" src="https://storage.googleapis.com/udio-artifacts-c33fe3ba-3ffe-471f-92c8-5dfef90b3ea3/samples/9f733f226f344f7e87c55fb210575746/2/The%2520Untitled.mp3"></audio>
+    <audio id="bgm10" src="https://storage.googleapis.com/udio-artifacts-c33fe3ba-3ffe-471f-92c8-5dfef90b3ea3/samples/9f733f226f344f7e87c55fb210575746/1/The%2520Untitled.mp3"></audio>
+    <audio id="bgm11" src="https://storage.googleapis.com/udio-artifacts-c33fe3ba-3ffe-471f-92c8-5dfef90b3ea3/samples/87b622b4ca3a4cff8cd364c6508f99c6/1/The%2520Untitled.mp3"></audio>
+    <audio id="bgm12" src="https://storage.googleapis.com/udio-artifacts-c33fe3ba-3ffe-471f-92c8-5dfef90b3ea3/samples/87b622b4ca3a4cff8cd364c6508f99c6/2/The%2520Untitled.mp3"></audio>
+
+<script>
+    document.addEventListener('DOMContentLoaded', () => {
+        // --- Game Setup ---
+        const elements = {
+            gameContainer: document.getElementById('game-container'),
+            canvas: document.getElementById('gameCanvas'),
+            introCanvas: document.getElementById('introCanvas'),
+            introOverlay: document.getElementById('intro-overlay'),
+            startButton: document.getElementById('startButton'),
+            skipIntroButton: document.getElementById('skipIntroButton'),
+            startNoDebtButton: document.getElementById('startNoDebtButton'),
+            gameStartContainer: document.getElementById('game-start-container'),
+            startGameButton: document.getElementById('startGameButton'),
+            terminalAnimationContainer: document.getElementById('terminal-animation-container'),
+            matrixCanvas: document.getElementById('matrix-canvas'),
+            textOverlay: document.getElementById('text-overlay'),
+            logContainer: document.getElementById('log-container'),
+            finalText: document.getElementById('final-text'),
+            cursor: document.getElementById('cursor'),
+            uiOverlay: document.getElementById('ui-overlay'),
+            healthBar: document.getElementById('health-bar-inner'),
+            xpBar: document.getElementById('xp-bar-inner'),
+            level: document.getElementById('level-display'),
+            nuyen: document.getElementById('nuyen-display'),
+            weaponDisplay: document.getElementById('weapon-display'),
+            quest: document.getElementById('quest-display'),
+            controls: document.getElementById('controls-display'),
+            messageBox: document.getElementById('message-box'),
+            gameOverScreen: document.getElementById('game-over-screen'),
+            continueButton: document.getElementById('continue-button'),
+            fullscreenBtn: document.getElementById('fullscreen-btn'),
+            muteBtn: document.getElementById('mute-btn'),
+            volumeSlider: document.getElementById('volume-slider'),
+            nextTrackBtn: document.getElementById('next-track-btn'),
+            mainVendorUI: document.getElementById('main-vendor-ui'),
+            dialogOverlay: document.getElementById('dialog-overlay'),
+            dialogBox: document.getElementById('dialog-box'),
+            dialogPortrait: document.getElementById('dialog-portrait'),
+            dialogSpeaker: document.getElementById('dialog-speaker'),
+            dialogText: document.getElementById('dialog-text'),
+            dialogOptions: document.getElementById('dialog-options'),
+            dialogPrompt: document.getElementById('dialog-prompt'),
+            rpgBattleContainer: document.getElementById('rpg-battle-container'),
+            battleScene: document.getElementById('battle-scene'),
+            battleSceneCanvas: document.getElementById('battle-scene-canvas'),
+            battlePlayerHealth: document.getElementById('battle-player-health'),
+            battleIceHealth: document.getElementById('battle-ice-health'),
+            battleLogText: document.getElementById('battle-log-text'),
+            battleActionsContainer: document.getElementById('battle-actions-container'),
+            statusMenuOverlay: document.getElementById('status-menu-overlay'),
+            statusLevel: document.getElementById('status-level'),
+            statusHealth: document.getElementById('status-health'),
+            statusNuyen: document.getElementById('status-nuyen'),
+            statusDebt: document.getElementById('status-debt'),
+            statusXp: document.getElementById('status-xp'),
+            equipmentList: document.getElementById('equipment-list'),
+            cyberwareList: document.getElementById('cyberware-list'),
+            activeQuests: document.getElementById('active-quests'),
+            completedQuests: document.getElementById('completed-quests'),
+            introAudio: document.getElementById('introAudio'),
+            worldIntroAudio: document.getElementById('worldIntroAudio'),
+            cutsceneAudio: document.getElementById('cutsceneAudio'),
+            worldIntroCutsceneContainer: document.getElementById('world-intro-cutscene-container'),
+            firstKillCutsceneContainer: document.getElementById('first-kill-cutscene-container'),
+            bgm1: document.getElementById('bgm1'), bgm2: document.getElementById('bgm2'), bgm3: document.getElementById('bgm3'),
+            bgm4: document.getElementById('bgm4'), bgm5: document.getElementById('bgm5'), bgm6: document.getElementById('bgm6'),
+            bgm7: document.getElementById('bgm7'), bgm8: document.getElementById('bgm8'), bgm9: document.getElementById('bgm9'),
+            bgm10: document.getElementById('bgm10'), bgm11: document.getElementById('bgm11'), bgm12: document.getElementById('bgm12'),
+            loadGameButton: document.getElementById('loadGameButton'),
+            loadCodeInput: document.getElementById('loadCodeInput'),
+            saveGameButton: document.getElementById('saveGameButton'),
+            saveCodeModal: document.getElementById('save-code-modal'),
+            saveCodeTextarea: document.getElementById('saveCodeTextarea'),
+            copySaveCodeButton: document.getElementById('copySaveCodeButton'),
+            closeSaveModalButton: document.getElementById('closeSaveModalButton'),
+            // Casino Elements
+            casinoUI: document.getElementById('casino-ui'),
+            casinoMsg: document.getElementById('casino-msg'),
+            pCards: document.getElementById('p-cards'),
+            dCards: document.getElementById('d-cards'),
+            betBtn: document.getElementById('bet-btn'),
+            hitBtn: document.getElementById('hit-btn'),
+            stayBtn: document.getElementById('stay-btn'),
+            debtDisplay: document.getElementById('debt-display')
+        };
+        
+        elements.ctx = elements.canvas ? elements.canvas.getContext('2d') : null;
+        elements.introCtx = elements.introCanvas ? elements.introCanvas.getContext('2d') : null;
+        elements.matrixCtx = elements.matrixCanvas ? elements.matrixCanvas.getContext('2d') : null;
+        elements.portraitCtx = elements.dialogPortrait ? elements.dialogPortrait.getContext('2d') : null;
+
+        // --- Game State & Variables ---
+        const worldWidth = 9600, worldHeight = 7200;
+        let keys = {};
+        let messageTimeout, typeInterval;
+        const assets = {};
+        let physicalBg, containmentBg, constructionBg, corporateBg;
+        let lastShotTime = 0, lastGrenadeTime = 0;
+        let isAimingGrenade = false;
+        let isMuted = false;
+        let lastVolume = 0.2;
+        let currentTrackIndex = -1;
+        let firstKillCutscenePlayed = false;
+
+        const camera = { x: 0, y: 0 };
+        const player = {
+            x: 4800, y: 3600, width: 40, height: 40,
+            baseSpeed: 4, speed: 4, health: 100, maxHealth: 100,
+            level: 1, xp: 0, xpToNextLevel: 100, nuyen: 500, debt: 5000,
+            weapons: ['pistol'], activeWeapon: 'pistol', grenades: 5,
+            cyberware: [], accuracyBonus: 0, matrixDamageBonus: 0,
+            isStealthed: false, lastDir: { x: 1, y: 0 }
+        };
+
+        const casinoBuilding = { x: 4700, y: 6900, width: 250, height: 180 };
+
+        let bullets = [], enemyBullets = [], explosions = [], grenades = [], enemies = [], npcs = [], obstacles = [], safeZones = [], lootItems = [], lootContainers = [];
+        let questPackage = null;
+        let activeQuests = [];
+        let completedQuests = [];
+        let trackedQuestId = null;
+        
+        const zones = {
+            corporatePlaza: { x: 0, y: 0, width: worldWidth, height: worldHeight },
+            construction:   { x: 1200, y: 1200, width: 7200, height: 4800 },
+            containment:    { x: 2400, y: 2400, width: 4800, height: 2400 },
+            slums:          { x: 3200, y: 3000, width: 3200, height: 1200 }
+        };
+        
+        let matrixMap = [];
+        const matrixPlayer = { x: 1.5, y: 1.5, dirX: -1, dirY: 0, planeX: 0, planeY: 0.66, moveSpeed: 0.05, rotSpeed: 0.03 };
+        
+        let battleState = {};
+        let lastSafeState = {};
+        let musicHasStarted = false;
+        let gameState = 'intro';
+        let previousGameState = 'intro';
+
+        // Blackjack State
+        let deck = [], pHand = [], dHand = [];
+        const cardVals = ['2','3','4','5','6','7','8','9','10','J','Q','K','A'];
+        
+        // --- Terminal Jack-in Animation ---
+        let terminalAnimationState = 'initializing';
+        let terminalDrops;
+        const terminalChars = 'アァカサタナハマヤャラワガザダバパイィキシチニヒミリヰギジヂビピウゥクスツヌフムユュルグズブヅプエェケセテネヘメレヱゲゼデベペオォコソトノホモヨョロヲゴゾドボポヴッン' + 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' + '0123456789';
+        
+        function setupTerminalAnimation() {
+            if (!elements.matrixCanvas || !elements.matrixCtx) return;
+            elements.matrixCanvas.width = window.innerWidth;
+            elements.matrixCanvas.height = window.innerHeight;
+            const fontSize = 16;
+            const columns = Math.floor(elements.matrixCanvas.width / fontSize);
+            terminalDrops = [];
+            for (let i = 0; i < columns; i++) {
+                terminalDrops[i] = 1;
+            }
+            elements.matrixCtx.font = `${fontSize}px 'Courier New'`;
+        }
+
+        function drawTerminalRain() {
+            elements.matrixCtx.fillStyle = 'rgba(0, 0, 0, 0.05)';
+            elements.matrixCtx.fillRect(0, 0, elements.matrixCanvas.width, elements.matrixCanvas.height);
+            elements.matrixCtx.fillStyle = '#00ff41'; 
+            for (let i = 0; i < terminalDrops.length; i++) {
+                const text = terminalChars.charAt(Math.floor(Math.random() * terminalChars.length));
+                const x = i * 16;
+                const y = terminalDrops[i] * 16;
+                elements.matrixCtx.fillText(text, x, y);
+                if (y > elements.matrixCanvas.height && Math.random() > 0.975) {
+                    terminalDrops[i] = 0;
+                }
+                terminalDrops[i]++;
+            }
+        }
+        
+        function typeWriter(text, onComplete, speed = 50) {
+            let i = 0;
+            const targetElement = gameState === 'battle' ? elements.battleLogText : elements.finalText;
+            targetElement.textContent = '';
+            
+            if (gameState !== 'battle') {
+                elements.cursor.style.display = 'inline-block'; 
+                elements.logContainer.style.display = 'none'; 
+                elements.textOverlay.style.textAlign = 'center';
+            }
+
+            clearInterval(typeInterval);
+            typeInterval = setInterval(() => {
+                if (i < text.length) {
+                    targetElement.textContent += text.charAt(i);
+                    i++;
+                } else {
+                    clearInterval(typeInterval);
+                    if (onComplete) {
+                        setTimeout(onComplete, 1000);
+                    }
+                }
+            }, speed);
+        }
+
+        function displayLogSequence(messages, container, finalCallback) {
+            let index = 0;
+            container.innerHTML = ''; 
+            elements.textOverlay.style.opacity = '1';
+            function showNextLog() {
+                if (index < messages.length) {
+                    const logLine = document.createElement('div');
+                    logLine.className = 'log-line';
+                    logLine.textContent = `> ${messages[index]}`;
+                    container.appendChild(logLine);
+                    index++;
+                    setTimeout(showNextLog, Math.random() * 400 + 150);
+                } else if (finalCallback) {
+                    setTimeout(finalCallback, 1500);
+                }
+            }
+            showNextLog();
+        }
+
+        let terminalAnimationId;
+        function terminalAnimate() {
+            if (terminalAnimationState !== 'rain') {
+                cancelAnimationFrame(terminalAnimationId);
+                return;
+            }
+            drawTerminalRain();
+            terminalAnimationId = requestAnimationFrame(terminalAnimate);
+        }
+
+        function startTerminalJackingAnimation(onCompleteCallback) {
+            elements.terminalAnimationContainer.style.display = 'block';
+            setupTerminalAnimation();
+            const logMessages = [
+                'INITIATING REALITY-DISTORTION FIELD...',
+                'SYNCING CHRONOSIGNATURE...',
+                'DECRYPTING BLACK ICE (LAYER 1/3)... [OK]',
+                'DECRYPTING BLACK ICE (LAYER 2/3)... [OK]',
+                'DECRYPTING BLACK ICE (LAYER 3/3)... [OK]',
+                'BYPASSING SATO-7 SECURITY DAEMON...',
+                'ROUTING THROUGH GHOST PROXIES...',
+                'NEURAL HANDSHAKE COMPLETE.',
+                'LOADING VIRTUAL CONSTRUCT...'
+            ];
+            terminalAnimationState = 'rain';
+            terminalAnimate();
+            setTimeout(() => {
+                displayLogSequence(logMessages, elements.logContainer, () => {
+                    terminalAnimationState = 'connected';
+                    elements.textOverlay.style.opacity = '0'; 
+                    setTimeout(() => {
+                        elements.terminalAnimationContainer.style.backgroundColor = '#fff';
+                        elements.matrixCanvas.style.opacity = '0';
+                        setTimeout(() => {
+                            elements.terminalAnimationContainer.style.backgroundColor = '#000';
+                            elements.textOverlay.style.opacity = '1';
+                            typeWriter('JACK-IN COMPLETE.', () => {
+                                elements.terminalAnimationContainer.style.display = 'none';
+                                elements.matrixCanvas.style.opacity = '1';
+                                if(onCompleteCallback) onCompleteCallback();
+                            }, 150);
+                        }, 200);
+                    }, 1000);
+                });
+            }, 1000); 
+        }
+
+        // --- ASSET GENERATION ---
+        function createPixelArt(data, p, size) {
+            const c = document.createElement('canvas'), w = data[0].length * size, h = data.length * size;
+            c.width = w; c.height = h;
+            const ctx = c.getContext('2d');
+            for (let y = 0; y < data.length; y++) for (let x = 0; x < data[y].length; x++) if (p[data[y][x]]) { ctx.fillStyle = p[data[y][x]]; ctx.fillRect(x*size, y*size, size, size); }
+            return c;
+        }
+        
+        function generateAssets() {
+            const palettes = {
+                player: { T: '#8B4513', k: '#A0522D', S: '#c2c2c2', h: '#ffae7a', d: '#3498db', b: '#2980b9', L:'#4a4a4a' },
+                enemy: { h: '#e0e0e0', R: '#e74c3c', G: '#95a5a6', g: '#7f8c8d', b: '#34495e', B:'#2c3e50' },
+                elite: { h: '#f39c12', R: '#d35400', G: '#34495e', g: '#2c3e50', b: '#c0392b', B: '#a81e1e'},
+                npc: { s: '#d1ccc0', h: '#3d3f4c', j: '#c0392b', b: '#2c3e50', C: '#00ffff' },
+                bullet: { p: { y: '#f1c40f', Y: '#f39c12', o: '#e67e22' }, e: { r: '#ff7675', R: '#d63031'} },
+                world: { obs: { '#': '#485460', g: '#2d3436'}, term: { b: '#7f8c8d', g: '#2c3e50', S: '#00ff00', k: '#34495e' } }
+            };
+            assets.player = createPixelArt(['..TTTT..','.TkkkkT.','TkShhSkT','TkdbbdkT','.dbbbbd.','.d.bb.d.','..b..b..','..L..L..'], palettes.player, 2.5);
+            assets.enemy = createPixelArt(['..hhhh..','.hRRRRhh','hRGRGGRh','hGGGGGGh','.gGGGGg.','.g.gg.g.','..b..b..','..B..B..'], palettes.enemy, 2.5);
+            assets.npc = createPixelArt(['.ssss.','shhssh','sjjjjs','sbbbbs','.sbbs.','..ss..'], palettes.npc, 8);
+            assets.playerBullet = createPixelArt(['.yo.','yYOy','.yo.'], palettes.bullet.p, 2);
+            assets.enemyBullet = createPixelArt(['.r.','rRr','.r.'], palettes.bullet.e, 2);
+            assets.obstacle = createPixelArt(['#g#g', 'g#g#', '#g#g', 'g#g#'], palettes.world.obs, 20);
+            assets.terminal = createPixelArt(['bbbbbb','bSgSgb','bSgSgb','bSgSgb','bkkkkb','bbbbbb'], palettes.world.term, 8);
+            
+            physicalBg = createPixelArt(['.d.d', 'd.d.', '.d.d', 'd.d.'], {'.': '#212121', d: '#313131'}, 40);
+            containmentBg = createPixelArt(['.r.r', 'r.r.', '.r.r', 'r.r.'], {'.': '#2c3e50', r: '#34495e'}, 40);
+            constructionBg = createPixelArt(['.y.y', 'y.y.', '.y.y', 'y.y.'], {'.': '#4a4a4a', y: '#5a5a5a'}, 40);
+            corporateBg = createPixelArt(['.c.c', 'c.c.', '.c.c', 'c.c.'], {'.': '#bdc3c7', c: '#ecf0f1'}, 40);
+        }
+
+        // --- BLACKJACK ENGINE ---
+        function resetCasinoDeck() {
+            deck = [];
+            for(let i=0; i<4; i++) deck.push(...cardVals);
+            deck.sort(() => Math.random() - 0.5);
+        }
+
+        function getHandValue(hand) {
+            let val = 0, aces = 0;
+            hand.forEach(c => {
+                if(['J','Q','K'].includes(c)) val += 10;
+                else if(c === 'A') { val += 11; aces++; }
+                else val += parseInt(c);
+            });
+            while(val > 21 && aces > 0) { val -= 10; aces--; }
+            return val;
+        }
+
+        window.casinoDeal = function() {
+            if(player.nuyen < 100) return showMessage("INSUFFICIENT FUNDS");
+            player.nuyen -= 100;
+            resetCasinoDeck();
+            pHand = [deck.pop(), deck.pop()];
+            dHand = [deck.pop()];
+            updateCasinoUI(true);
+        };
+
+        window.casinoHit = function() {
+            pHand.push(deck.pop());
+            if(getHandValue(pHand) > 21) endCasinoHand("BUST. HOUSE WINS.");
+            else renderCasinoCards();
+        };
+
+        window.casinoStay = function() {
+            while(getHandValue(dHand) < 17) dHand.push(deck.pop());
+            const pV = getHandValue(pHand), dV = getHandValue(dHand);
+            if(dV > 21 || pV > dV) {
+                player.nuyen += 200;
+                player.debt -= 200;
+                endCasinoHand("WINNER. 200¥ CREDITED TO DEBT.");
+            } else if(pV === dV) {
+                player.nuyen += 100;
+                endCasinoHand("PUSH. BET RETURNED.");
+            } else {
+                endCasinoHand("HOUSE WINS.");
+            }
+        };
+
+        function endCasinoHand(msg) {
+            elements.casinoMsg.innerText = msg;
+            updateCasinoUI(false);
+        }
+
+        function updateCasinoUI(playing) {
+            elements.betBtn.style.display = playing ? 'none' : 'inline-block';
+            elements.hitBtn.style.display = playing ? 'inline-block' : 'none';
+            elements.stayBtn.style.display = playing ? 'inline-block' : 'none';
+            renderCasinoCards();
+            elements.nuyen.textContent = `NUYEN: ${player.nuyen}¥`;
+            elements.debtDisplay.textContent = player.debt;
+        }
+
+        function renderCasinoCards() {
+            elements.pCards.innerHTML = pHand.map(c => `<div class="card">${c}</div>`).join('');
+            elements.dCards.innerHTML = dHand.map(c => `<div class="card">${c}</div>`).join('');
+        }
+
+        window.exitCasino = function() {
+            gameState = 'physical';
+            elements.casinoUI.style.display = 'none';
+            player.y -= 100; 
+        }
+
+        // --- PHYSICS & ENGINE ---
+        function checkCollision(r1, r2) { return r1.x < r2.x + r2.width && r1.x + r1.width > r2.x && r1.y < r2.y + r2.height && r1.y + r1.height > r2.y; }
+
+        function updatePhysical() {
+            if(gameState === 'casino') return;
+
+            let moveX = (keys['d'] ? 1 : 0) - (keys['a'] ? 1 : 0);
+            let moveY = (keys['s'] ? 1 : 0) - (keys['w'] ? 1 : 0);
+            if (moveX !== 0 || moveY !== 0) {
+                const mag = Math.sqrt(moveX*moveX + moveY*moveY);
+                player.x += (moveX/mag) * player.speed;
+                player.y += (moveY/mag) * player.speed;
+            }
+
+            // Casino Entry Check
+            if (player.x > casinoBuilding.x && player.x < casinoBuilding.x + casinoBuilding.width &&
+                player.y > casinoBuilding.y && player.y < casinoBuilding.y + casinoBuilding.height) {
+                if (keys['e']) {
+                    gameState = 'casino';
+                    elements.casinoUI.style.display = 'block';
+                    elements.casinoMsg.innerText = "WELCOME TO THE RED VELVET, RUNNER.";
+                    keys['e'] = false;
+                }
+            }
+
+            camera.x = player.x - elements.canvas.width/2;
+            camera.y = player.y - elements.canvas.height/2;
+            camera.x = Math.max(0, Math.min(worldWidth - elements.canvas.width, camera.x));
+            camera.y = Math.max(0, Math.min(worldHeight - elements.canvas.height, camera.y));
+        }
+
+        function drawPhysical() {
+            elements.ctx.save();
+            elements.ctx.translate(-camera.x, -camera.y);
+
+            // Patterns
+            elements.ctx.fillStyle = elements.ctx.createPattern(physicalBg, 'repeat');
+            elements.ctx.fillRect(0,0,worldWidth,worldHeight);
+
+            // Draw Casino Building
+            elements.ctx.fillStyle = 'rgba(0, 42, 10, 0.9)';
+            elements.ctx.fillRect(casinoBuilding.x, casinoBuilding.y, casinoBuilding.width, casinoBuilding.height);
+            elements.ctx.strokeStyle = '#00ff41';
+            elements.ctx.lineWidth = 5;
+            elements.ctx.strokeRect(casinoBuilding.x, casinoBuilding.y, casinoBuilding.width, casinoBuilding.height);
+            elements.ctx.fillStyle = '#00ff41';
+            elements.ctx.font = '24px Courier New';
+            elements.ctx.fillText("RED VELVET CASINO", casinoBuilding.x + 20, casinoBuilding.y + 80);
+            elements.ctx.font = '14px Courier New';
+            elements.ctx.fillText("[E] TO ENTER", casinoBuilding.x + 70, casinoBuilding.y + 110);
+
+            // Player
+            elements.ctx.drawImage(assets.player, player.x, player.y, player.width, player.height);
+            
+            elements.ctx.restore();
+            elements.debtDisplay.textContent = player.debt;
+        }
+
+        // Raycasting Logic Preserved from v5.2.1
+        function drawMatrixMaze() {
+            const screenWidth = elements.canvas.width;
+            const screenHeight = elements.canvas.height;
+            const halfHeight = screenHeight / 2;
+            elements.ctx.fillStyle = "#1a1a1a"; elements.ctx.fillRect(0, 0, screenWidth, halfHeight);
+            elements.ctx.fillStyle = "#333333"; elements.ctx.fillRect(0, halfHeight, screenWidth, halfHeight);
+            for(let x = 0; x < screenWidth; x++) {
+                const cameraX = 2 * x / screenWidth - 1;
+                const rayDirX = matrixPlayer.dirX + matrixPlayer.planeX * cameraX;
+                const rayDirY = matrixPlayer.dirY + matrixPlayer.planeY * cameraX;
+                let mapX = Math.floor(matrixPlayer.x);
+                let mapY = Math.floor(matrixPlayer.y);
+                const deltaDistX = Math.abs(1 / rayDirX);
+                const deltaDistY = Math.abs(1 / rayDirY);
+                let sideDistX, sideDistY, stepX, stepY, hit = 0, side;
+                if (rayDirX < 0) { stepX = -1; sideDistX = (matrixPlayer.x - mapX) * deltaDistX; } else { stepX = 1; sideDistX = (mapX + 1.0 - matrixPlayer.x) * deltaDistX; }
+                if (rayDirY < 0) { stepY = -1; sideDistY = (matrixPlayer.y - mapY) * deltaDistY; } else { stepY = 1; sideDistY = (mapY + 1.0 - matrixPlayer.y) * deltaDistY; }
+                while (hit == 0) {
+                    if (sideDistX < sideDistY) { sideDistX += deltaDistX; mapX += stepX; side = 0; } else { sideDistY += deltaDistY; mapY += stepY; side = 1; }
+                    if (matrixMap[mapY]?.[mapX] > 0) hit = 1;
+                }
+                let perpWallDist = (side == 0) ? (sideDistX - deltaDistX) : (sideDistY - deltaDistY);
+                const lineHeight = Math.floor(screenHeight / perpWallDist);
+                let drawStart = -lineHeight / 2 + halfHeight;
+                let drawEnd = lineHeight / 2 + halfHeight;
+                elements.ctx.strokeStyle = (side == 1) ? "#00aaaa" : "#00ffff";
+                elements.ctx.beginPath(); elements.ctx.moveTo(x, drawStart); elements.ctx.lineTo(x, drawEnd); elements.ctx.stroke();
+            }
+        }
+
+        function gameLoop() {
+            if (gameState === 'intro') return requestAnimationFrame(gameLoop);
+            elements.ctx.clearRect(0, 0, elements.canvas.width, elements.canvas.height);
+            if (gameState === 'physical' || gameState === 'casino') {
+                updatePhysical();
+                drawPhysical();
+            } else if (gameState === 'matrix-maze') {
+                drawMatrixMaze();
+            }
+            requestAnimationFrame(gameLoop);
+        }
+
+        function showMessage(text) {
+            elements.messageBox.textContent = text; elements.messageBox.style.opacity = '1';
+            setTimeout(() => elements.messageBox.style.opacity = '0', 2000);
+        }
+
+        // --- LISTENERS ---
+        window.addEventListener("keydown",e=>{
+            const key = e.key.toLowerCase();
+            keys[key]=true;
+            if(gameState === 'casino') {
+                if(key === 'h') casinoHit();
+                if(key === 's') casinoStay();
+                if(key === 'q') exitCasino();
+            }
+        });
+        window.addEventListener("keyup",e=>keys[e.key.toLowerCase()]=false);
+
+        elements.skipIntroButton.addEventListener('click', () => {
+            elements.introOverlay.style.display = 'none';
+            elements.gameContainer.style.display = 'block';
+            gameState = 'physical';
+            generateAssets();
+            gameLoop();
+        });
+        
+        // Initial Mock Data for Matrix
+        matrixMap = [[1,1,1,1,1],[1,0,0,0,1],[1,0,1,0,1],[1,0,0,0,1],[1,1,1,1,1]];
+    });
+</script>
+</body>
+</html>

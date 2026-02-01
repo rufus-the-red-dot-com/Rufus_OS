@@ -1,0 +1,187 @@
+#include <Arduino.h>
+#include <U8g2lib.h>
+#include <Encoder.h>
+#include <EEPROM.h>
+
+// U8G2_R3 sets the rotation to 270 degrees (Vertical/Portrait)
+U8G2_SH1106_128X64_NONAME_1_HW_I2C u8g2(U8G2_R3, /* reset=*/ U8X8_PIN_NONE);
+Encoder dial(2, 3);
+
+#define PSH_MENU 4  
+#define BTN_SLOT 8  
+#define BTN_NEXT 7  
+#define SPK      5  
+
+struct Pick { int numPins; int offsets[3]; bool active; };
+enum GameState { TITLE, SAVELOAD, PLAYING, SHOP };
+
+Pick bank[8];
+bool gaps[2][8]; 
+int currentPick = 0, rotation = 0, dataCount = 80, playerExp = 0, playerLevel = 1;
+int activeSlot = 0;
+GameState state = TITLE;
+
+void drawPins(int x, int y, Pick& p, int rot, int len) {
+  for (int i = 0; i < p.numPins; i++) {
+    float a = (rot + (p.offsets[i] * 45)) * 0.017453;
+    u8g2.drawLine(x, y, x + cos(a) * len, y + sin(a) * len);
+  }
+}
+
+void shatterEffect(int cx, int cy) {
+  for(int i=0; i<8; i++) {
+    u8g2.firstPage();
+    do {
+      for(int j=0; j<12; j++) u8g2.drawPixel(cx + random(-i, i), cy + random(-i, i));
+      u8g2.setFont(u8g2_font_4x6_tf);
+      u8g2.drawStr(15, 60, "ERR:SNAP");
+    } while (u8g2.nextPage());
+    delay(30);
+  }
+}
+
+// EEPROM Logic
+void saveToEEPROM(int slot) {
+  int addr = slot * 10;
+  EEPROM.update(addr, (uint8_t)playerLevel);
+  EEPROM.update(addr + 1, (uint8_t)dataCount);
+  EEPROM.update(addr + 2, (uint8_t)playerExp);
+}
+
+void loadFromEEPROM(int slot) {
+  int addr = slot * 10;
+  uint8_t lvl = EEPROM.read(addr);
+  if(lvl == 255 || lvl == 0) { playerLevel = 1; dataCount = 80; playerExp = 0; }
+  else {
+    playerLevel = lvl;
+    dataCount = EEPROM.read(addr + 1);
+    playerExp = EEPROM.read(addr + 2);
+  }
+}
+
+void generateRingGaps(int layer) {
+  for (int s = 0; s < 8; s++) gaps[layer][s] = false;
+  int numGaps = 3 + (playerLevel / 2);
+  if (numGaps > 7) numGaps = 7;
+  for (int i = 0; i < numGaps; i++) gaps[layer][random(0, 8)] = true;
+}
+
+void buyPick() {
+  for(int i=0; i<8; i++) {
+    if(!bank[i].active) {
+      bank[i].active = true; bank[i].numPins = random(1, 4); bank[i].offsets[0] = 0;
+      for (int p = 1; p < bank[i].numPins; p++) bank[i].offsets[p] = random(1, 6);
+      tone(SPK, 1200, 30); return;
+    }
+  }
+}
+
+void setup() {
+  u8g2.begin();
+  u8g2.setBusClock(400000);
+  pinMode(PSH_MENU, INPUT_PULLUP);
+  pinMode(BTN_SLOT, INPUT_PULLUP);
+  pinMode(BTN_NEXT, INPUT_PULLUP);
+  randomSeed(analogRead(0));
+}
+
+void loop() {
+  static int menuIdx = 0;
+  rotation = ((dial.read() / 2) * 45) % 360; 
+  if (rotation < 0) rotation += 360;
+
+  if (state == TITLE) {
+    u8g2.firstPage();
+    do {
+      u8g2.setFont(u8g2_font_7x14_tr);
+      u8g2.drawStr(2, 40, "DIGIPICK"); // Centered for 64w
+      u8g2.setFont(u8g2_font_4x6_tf);
+      u8g2.drawStr(10, 80, "PRESS_BOOT");
+    } while (u8g2.nextPage());
+    if (digitalRead(PSH_MENU) == LOW) { state = SAVELOAD; delay(300); }
+  } 
+
+  else if (state == SAVELOAD) {
+    menuIdx = (abs(dial.read()/4)) % 3;
+    u8g2.firstPage();
+    do {
+      u8g2.setFont(u8g2_font_5x8_tr);
+      u8g2.drawStr(5, 20, "MEM_LINK:");
+      for(int i=0; i<3; i++) {
+        u8g2.setCursor(10, 50 + (i*15));
+        if(menuIdx == i) u8g2.print("> ");
+        u8g2.print("SLOT 0"); u8g2.print(i+1);
+      }
+    } while (u8g2.nextPage());
+    if (digitalRead(PSH_MENU) == LOW) { 
+      activeSlot = menuIdx; loadFromEEPROM(activeSlot); 
+      generateRingGaps(0); generateRingGaps(1); 
+      state = PLAYING; delay(300); 
+    }
+  }
+
+  else if (state == PLAYING) {
+    if (digitalRead(BTN_SLOT) == LOW && bank[currentPick].active) {
+      int sStep = (rotation / 45) % 8;
+      bool match = true;
+      for (int i = 0; i < bank[currentPick].numPins; i++) {
+        if (!gaps[0][(sStep + bank[currentPick].offsets[i]) % 8]) match = false;
+      }
+
+      if (match) {
+        for (int i = 0; i < bank[currentPick].numPins; i++) gaps[0][(sStep + bank[currentPick].offsets[i]) % 8] = false;
+        bank[currentPick].active = false;
+        dataCount += 10; playerExp += 25;
+        if (playerExp >= 100) { playerLevel++; playerExp = 0; }
+        tone(SPK, 1200, 50);
+        bool clear = true;
+        for (int i = 0; i < 8; i++) if (gaps[0][i]) clear = false;
+        if (clear) { dataCount += 20; for (int s = 0; s < 8; s++) gaps[0][s] = gaps[1][s]; generateRingGaps(1); saveToEEPROM(activeSlot); }
+      } else {
+        bank[currentPick].active = false; 
+        shatterEffect(32, 55); 
+        tone(SPK, 150, 600);
+      }
+      delay(250);
+    }
+
+    if (digitalRead(BTN_NEXT) == LOW) { 
+      int s = currentPick; 
+      do { currentPick = (currentPick + 1) % 8; } while (!bank[currentPick].active && currentPick != s); 
+      tone(SPK, 600, 20); delay(200); 
+    }
+    if (digitalRead(PSH_MENU) == LOW) { state = SHOP; delay(300); }
+
+    u8g2.firstPage();
+    do {
+      u8g2.setFont(u8g2_font_4x6_tf);
+      u8g2.setCursor(2, 10); u8g2.print("DT:"); u8g2.print(dataCount);
+      u8g2.setCursor(35, 10); u8g2.print("LV:"); u8g2.print(playerLevel);
+      u8g2.drawHLine(0, 12, 64);
+      int cx = 32, cy = 60; // Adjusted for vertical center
+      for (int r = 0; r < 2; r++) {
+        int rad = 24 - (r * 10); u8g2.drawCircle(cx, cy, rad);
+        u8g2.setDrawColor(0);
+        for (int s = 0; s < 8; s++) if (gaps[r][s]) { float a = s * 0.78539; u8g2.drawBox(cx + cos(a)*rad - 4, cy + sin(a)*rad - 4, 8, 8); }
+        u8g2.setDrawColor(1);
+      }
+      if (bank[currentPick].active) drawPins(cx, cy, bank[currentPick], rotation, 24);
+      for (int i = 0; i < 8; i++) {
+        int bx = 2 + (i * 7); u8g2.drawFrame(bx, 115, 5, 1); // Narrowed for 64w
+        if (bank[i].active) { if (i == currentPick) u8g2.drawFrame(bx-1, 112, 6, 12); drawPins(bx + 2, 118, bank[i], 270, 4); }
+      }
+    } while (u8g2.nextPage());
+  }
+
+  else if (state == SHOP) {
+    if (digitalRead(BTN_NEXT) == LOW && dataCount >= 5) { dataCount -= 5; buyPick(); delay(200); }
+    if (digitalRead(PSH_MENU) == LOW) { state = PLAYING; saveToEEPROM(activeSlot); delay(300); }
+    u8g2.firstPage();
+    do {
+      u8g2.setFont(u8g2_font_5x8_tr); u8g2.drawStr(2, 20, "HACK_TERM");
+      u8g2.setCursor(5, 45); u8g2.print("CRED: "); u8g2.print(dataCount);
+      u8g2.drawStr(5, 75, "[CON] BUY(5)");
+      u8g2.drawStr(5, 110, "[KNOB] BACK");
+    } while (u8g2.nextPage());
+  }
+}

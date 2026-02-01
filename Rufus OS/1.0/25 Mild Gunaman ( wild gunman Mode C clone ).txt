@@ -1,0 +1,201 @@
+#include <Arduino.h>
+#include <U8g2lib.h>
+#include <Wire.h>
+
+// SH1106 128x64 I2C
+U8G2_SH1106_128X64_NONAME_1_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+
+// --- PIN DEFINITIONS ---
+#define STICK_X    A0
+#define STICK_Y    A1
+#define BTN_FIRE   11 // Shoot
+#define BZ_OUT     3  
+
+// --- GAME CONSTANTS ---
+#define GRID_SIZE 3
+#define WIN_W 30
+#define WIN_H 16
+#define START_X 19
+#define START_Y 6
+
+// --- ENUMS & STATES ---
+enum GameState { TITLE, WAITING, TARGET_UP, SHOT_SUCCESS, SHOT_MISS, GAMEOVER };
+GameState state = TITLE;
+
+// --- GLOBALS ---
+int activeWindow = -1;       // Window where criminal appears (0-8)
+int selectedWindow = 4;      // Current window crosshair is over (0-8)
+unsigned long timer = 0;     // General game timer
+unsigned long reactionTime = 0;
+int score = 0;
+int lives = 3;
+int difficulty = 800;        // Initial time window to shoot (ms)
+
+// --- UTILS ---
+void playSfx(int f, int d) { tone(BZ_OUT, f, d); }
+
+void playIntro() {
+  playSfx(440, 100); delay(100);
+  playSfx(554, 100); delay(100);
+  playSfx(659, 200);
+}
+
+void resetGame() {
+  score = 0;
+  lives = 3;
+  difficulty = 800;
+  state = WAITING;
+  timer = millis() + random(1500, 3000);
+}
+
+// --- LOGIC ---
+void handleJoystick() {
+  int sx = analogRead(STICK_X);
+  int sy = analogRead(STICK_Y);
+  
+  int col = 1; // Default Center
+  int row = 1; // Default Center
+  
+  // X-Axis Snapping
+  if (sx < 350) col = 0;      // Left
+  else if (sx > 650) col = 2; // Right
+  
+  // Y-Axis Snapping
+  if (sy < 350) row = 0;      // Up
+  else if (sy > 650) row = 2; // Down
+  
+  selectedWindow = row * 3 + col;
+}
+
+void updateGame() {
+  if (state == WAITING) {
+    if (millis() > timer) {
+      state = TARGET_UP;
+      activeWindow = random(0, 9);
+      timer = millis() + difficulty; // Time allowed to shoot
+      reactionTime = millis();
+      playSfx(1000, 50);
+    }
+  } 
+  else if (state == TARGET_UP) {
+    if (millis() > timer) {
+      state = SHOT_MISS;
+      lives--;
+      timer = millis() + 1500;
+      playSfx(150, 400);
+      if (lives <= 0) state = GAMEOVER;
+    }
+  }
+}
+
+// --- DRAWING ---
+void drawWindow(int id, bool hasTarget) {
+  int r = id / 3;
+  int c = id % 3;
+  int px = START_X + (c * WIN_W) + (c * 4);
+  int py = START_Y + (r * WIN_H) + (r * 2);
+  
+  // Draw Window Frame
+  u8g2.drawFrame(px, py, WIN_W, WIN_H);
+  
+  // Draw Target (Criminal)
+  if (hasTarget) {
+    // Simple face/body
+    u8g2.drawDisc(px + WIN_W/2, py + 5, 2);
+    u8g2.drawLine(px + WIN_W/2, py + 7, px + WIN_W/2, py + 12);
+    u8g2.drawLine(px + WIN_W/2 - 3, py + 9, px + WIN_W/2 + 3, py + 9);
+  }
+  
+  // Draw Crosshair on selected window
+  if (selectedWindow == id) {
+    u8g2.drawFrame(px - 2, py - 2, WIN_W + 4, WIN_H + 4);
+    // Crosshair corners
+    u8g2.drawLine(px - 4, py - 4, px, py - 4);
+    u8g2.drawLine(px - 4, py - 4, px - 4, py);
+  }
+}
+
+void drawUI() {
+  u8g2.firstPage();
+  do {
+    if (state == TITLE) {
+      u8g2.setFont(u8g2_font_7x14_tf);
+      u8g2.drawStr(22, 30, "MILD GUNMAN");
+      u8g2.setFont(u8g2_font_4x6_tf);
+      u8g2.drawStr(38, 50, "MODE C GANG");
+    } 
+    else if (state == GAMEOVER) {
+      u8g2.setFont(u8g2_font_7x14_tf);
+      u8g2.drawStr(30, 30, "GAME OVER");
+      u8g2.setCursor(45, 45); u8g2.print("SCORE: "); u8g2.print(score);
+    }
+    else {
+      // Draw 3x3 Grid
+      for (int i = 0; i < 9; i++) {
+        drawWindow(i, (state == TARGET_UP && activeWindow == i));
+      }
+      
+      // Prompt
+      if (state == TARGET_UP) {
+        u8g2.setFont(u8g2_font_5x7_tf);
+        u8g2.drawStr(0, 35, "!!!");
+        u8g2.drawStr(115, 35, "!!!");
+      }
+
+      // HUD
+      u8g2.setFont(u8g2_font_4x6_tf);
+      u8g2.setCursor(2, 62); u8g2.print("SC:"); u8g2.print(score);
+      u8g2.setCursor(45, 62); u8g2.print("TIME:"); u8g2.print(difficulty); u8g2.print("ms");
+      u8g2.setCursor(100, 62); u8g2.print("L:"); 
+      for(int l=0; l<lives; l++) u8g2.print("I");
+
+      if (state == SHOT_SUCCESS) {
+        u8g2.drawStr(50, 32, "NICE!");
+      }
+    }
+  } while (u8g2.nextPage());
+}
+
+void handleInput() {
+  if (digitalRead(BTN_FIRE) == LOW) {
+    if (state == TITLE || state == GAMEOVER) {
+      resetGame();
+      playIntro();
+      delay(300);
+    } 
+    else if (state == TARGET_UP) {
+      if (selectedWindow == activeWindow) {
+        // HIT!
+        state = SHOT_SUCCESS;
+        score++;
+        playSfx(1500, 50);
+        difficulty = max(250, difficulty - 15); // Increase difficulty
+        timer = millis() + 800; // Delay for "NICE!" screen
+      } else {
+        // MISSED SHOT
+        playSfx(300, 100);
+      }
+    }
+    delay(100); // Debounce
+  }
+}
+
+void setup() {
+  pinMode(BTN_FIRE, INPUT_PULLUP);
+  u8g2.begin();
+  randomSeed(analogRead(A2));
+}
+
+void loop() {
+  handleJoystick();
+  handleInput();
+  updateGame();
+  
+  // Transition back to waiting after success/fail messages
+  if ((state == SHOT_SUCCESS || state == SHOT_MISS) && millis() > timer) {
+    state = WAITING;
+    timer = millis() + random(1000, 2500);
+  }
+  
+  drawUI();
+}

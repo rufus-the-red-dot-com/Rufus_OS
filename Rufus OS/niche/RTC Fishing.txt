@@ -1,0 +1,254 @@
+/*
+ * PROJECT: CHRONO-ANGLER v2.4 (UX & Audio Refinement)
+ * HARDWARE: Arduino Nano + SH1106 OLED + DS3231 RTC
+ * INPUT: 3-Button/Probe Classic (A: D11, B: D10, C: D9)
+ * STATUS: Moved advancement to Pin C; Refined mashing audio
+ */
+
+#include <Arduino.h>
+#include <U8g2lib.h>
+#include <Wire.h>
+#include <RTClib.h>
+#include <EEPROM.h>
+
+U8G2_SH1106_128X64_NONAME_1_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+RTC_DS3231 rtc;
+
+// --- REVERSED SEQUENTIAL PINOUT ---
+#define PIN_A       11  // Cycle / Select (Third Probe)
+#define PIN_B       10  // Cast / Mash / Hook (Middle Probe)
+#define PIN_C       9   // Menu / Back / ADVANCE (First Probe)
+#define BZ_MEL      3   
+
+// --- SPRITES ---
+static const unsigned char fish_icon[] U8X8_PROGMEM = { 0x00,0x00,0x00,0x00,0x00,0x01,0x80,0x03,0xc0,0x07,0xfe,0x0f,0xff,0x1f,0xfe,0x3f,0xc0,0x1f,0x80,0x0f,0x00,0x07,0x00,0x03,0x00,0x01,0x00,0x00,0x00,0x00 };
+
+// --- GAME DATA ---
+enum GameState { START, LAKE, CASTING, BITE, REELING, CAUGHT, MENU_MAIN, DEX, SHOP };
+const char* FISH_NAMES[] = {"VOID EEL", "NEON TROUT", "DATA BASS", "SUN RAY", "PIXEL PIKE", "CLOCK CARP"};
+const int FISH_VALS[] = {50, 20, 15, 25, 30, 10}; 
+
+struct GameSave {
+    uint32_t magic;
+    int level;
+    int exp;
+    long bits;
+    int fishCounts[6];
+    int rodLvl;   
+    int reelLvl;  
+    int lureLvl;  
+} save;
+
+struct Session {
+    GameState state = START;
+    unsigned long timer = 0;
+    int mashProgress = 0;
+    int targetFishIdx = 0;
+    int menuIdx = 0;
+    int currentBait = 0;
+    String lastCaught = "";
+} game;
+
+// --- UTILS ---
+
+void playTone(int freq, int dur) { tone(BZ_MEL, freq, dur); delay(dur/2); }
+
+void playArpeggio() {
+    playTone(440, 40); // A4
+    playTone(554, 40); // C#5
+    playTone(659, 40); // E5
+    playTone(880, 80); // A5
+}
+
+void saveGame() { EEPROM.put(0, save); }
+
+void loadGame() {
+    EEPROM.get(0, save);
+    if (save.magic != 0xDEADC0DE) {
+        save.magic = 0xDEADC0DE;
+        save.level = 1; save.exp = 0; save.bits = 0;
+        save.rodLvl = 0; save.reelLvl = 0; save.lureLvl = 0;
+        for(int i=0; i<6; i++) save.fishCounts[i] = 0;
+        saveGame();
+    }
+}
+
+int getFishByTime(int hour) {
+    if (hour >= 21 || hour < 5) return 0; 
+    if (hour >= 5  && hour < 9) return 1; 
+    if (hour >= 9  && hour < 14) return 2; 
+    if (hour >= 14 && hour < 18) return 3; 
+    if (hour >= 18 && hour < 21) return 4; 
+    return 5; 
+}
+
+void handleInput() {
+    // Button A (D11) - Cycle
+    if (digitalRead(PIN_A) == LOW) { 
+        if (game.state == LAKE) { game.currentBait = (game.currentBait + 1) % 3; playTone(800, 40); }
+        else if (game.state == MENU_MAIN) { game.menuIdx = (game.menuIdx + 1) % 3; playTone(800, 40); }
+        else if (game.state == SHOP) { game.menuIdx = (game.menuIdx + 1) % 3; playTone(800, 40); }
+        delay(200);
+    }
+
+    // Button B (D10) - Pure Action / Mash
+    if (digitalRead(PIN_B) == LOW) { 
+        if (game.state == LAKE) {
+            game.state = CASTING;
+            int waitMin = 4000 - (save.rodLvl * 1000);
+            int waitMax = 8000 - (save.rodLvl * 2000);
+            game.timer = millis() + random(waitMin, waitMax);
+            playTone(600, 50);
+        }
+        else if (game.state == BITE) { 
+            game.state = REELING; 
+            game.mashProgress = 0; 
+            playTone(1500, 50);
+        }
+        else if (game.state == REELING) {
+            game.mashProgress += (4 + save.reelLvl * 3 + save.level);
+            // Quieter, shorter "click" tone for mashing
+            tone(BZ_MEL, 150, 5); 
+        }
+        else if (game.state == SHOP) {
+            long cost = 100 * ( (game.menuIdx == 0 ? save.rodLvl : (game.menuIdx == 1 ? save.reelLvl : save.lureLvl)) + 1 );
+            if (save.bits >= cost) {
+                if (game.menuIdx == 0 && save.rodLvl < 2) { save.rodLvl++; save.bits -= cost; playTone(2000, 200); }
+                else if (game.menuIdx == 1 && save.reelLvl < 2) { save.reelLvl++; save.bits -= cost; playTone(2000, 200); }
+                else if (game.menuIdx == 2 && save.lureLvl < 2) { save.lureLvl++; save.bits -= cost; playTone(2000, 200); }
+                saveGame();
+            } else { playTone(200, 400); }
+        }
+        delay(150);
+    }
+
+    // Button C (D9) - Back / Advance / Dismiss
+    if (digitalRead(PIN_C) == LOW) { 
+        if (game.state == START) { game.state = LAKE; playTone(1000, 100); }
+        else if (game.state == CAUGHT) { game.state = LAKE; playTone(600, 50); }
+        else if (game.state == LAKE) { game.state = MENU_MAIN; game.menuIdx = 0; playTone(400, 50); }
+        else if (game.state == CASTING) { game.state = LAKE; playTone(400, 50); }
+        else if (game.state == MENU_MAIN || game.state == DEX || game.state == SHOP) {
+            if (game.state == MENU_MAIN) game.state = LAKE;
+            else if (game.state == DEX || game.state == SHOP) game.state = MENU_MAIN;
+            playTone(400, 50);
+        }
+        delay(200);
+    }
+}
+
+void setup() {
+    Wire.begin(); u8g2.begin(); rtc.begin();
+    pinMode(PIN_A, INPUT_PULLUP); pinMode(PIN_B, INPUT_PULLUP); pinMode(PIN_C, INPUT_PULLUP);
+    pinMode(BZ_MEL, OUTPUT);
+    if (rtc.lostPower()) rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+    loadGame();
+}
+
+void loop() {
+    handleInput();
+    DateTime now = rtc.now();
+    unsigned long nowMs = millis();
+
+    if (game.state == CASTING && nowMs > game.timer) {
+        game.state = BITE;
+        game.timer = nowMs + 1500 + (save.lureLvl * 500); 
+        playTone(1800, 100);
+    }
+    
+    if (game.state == BITE && nowMs > game.timer) {
+        game.state = LAKE; playTone(150, 400); 
+    }
+
+    if (game.state == REELING) {
+        if (game.mashProgress >= 100) {
+            // PLAY SUCCESS ARPEGGIO
+            playArpeggio();
+            
+            game.targetFishIdx = getFishByTime(now.hour());
+            save.fishCounts[game.targetFishIdx]++;
+            save.bits += FISH_VALS[game.targetFishIdx];
+            save.exp += (FISH_VALS[game.targetFishIdx] / 2);
+            
+            if (save.exp >= (save.level * 100)) {
+                save.exp = 0; save.level++;
+                playTone(1000, 50); playTone(1200, 50); playTone(1500, 100);
+            }
+
+            game.lastCaught = FISH_NAMES[game.targetFishIdx];
+            game.state = CAUGHT;
+            saveGame();
+        }
+    }
+
+    u8g2.firstPage();
+    do {
+        u8g2.setFont(u8g2_font_u8glib_4_tf);
+        
+        int h12 = now.hour() % 12; if(h12==0) h12=12;
+        u8g2.setCursor(0, 6); u8g2.print(now.month()); u8g2.print("/"); u8g2.print(now.day());
+        u8g2.setCursor(50, 6); u8g2.print("LV:"); u8g2.print(save.level);
+        u8g2.setCursor(95, 6); u8g2.print(h12); u8g2.print(":"); if(now.minute()<10) u8g2.print("0"); u8g2.print(now.minute());
+        u8g2.drawHLine(0, 8, 128);
+
+        if (game.state == START) {
+            u8g2.setFont(u8g2_font_7x14_tf); u8g2.drawStr(20, 35, "CHRONO-RPG");
+            u8g2.setFont(u8g2_font_u8glib_4_tf); u8g2.drawStr(35, 55, "C: START");
+        }
+        else if (game.state == LAKE) {
+            u8g2.drawStr(10, 20, "LAKE SIM: ACTIVE");
+            u8g2.setCursor(10, 30); u8g2.print("BITS: "); u8g2.print(save.bits);
+            u8g2.drawXBMP(56, 35, 16, 15, fish_icon);
+            u8g2.drawStr(10, 55, "B: CAST   C: MENU");
+            u8g2.setCursor(10, 62); u8g2.print("A: LURE [T"); u8g2.print(game.currentBait + 1); u8g2.print("]");
+        }
+        else if (game.state == CASTING) {
+            int wave = (nowMs / 200) % 4;
+            for(int i=0; i<128; i+=16) u8g2.drawHLine(i, 40 + (i%2==0?wave:-wave), 8);
+            u8g2.drawStr(40, 55, "WAITING...");
+        }
+        else if (game.state == BITE) {
+            u8g2.drawRBox(35, 25, 58, 20, 2); u8g2.setDrawColor(0);
+            u8g2.drawStr(42, 38, "B: HOOK!"); u8g2.setDrawColor(1);
+        }
+        else if (game.state == REELING) {
+            u8g2.drawRFrame(20, 30, 88, 15, 2);
+            u8g2.drawBox(22, 32, (game.mashProgress * 84) / 100, 11);
+            u8g2.drawStr(45, 55, "MASH B!!!");
+        }
+        else if (game.state == CAUGHT) {
+            u8g2.drawRBox(15, 20, 98, 40, 3); u8g2.setDrawColor(0);
+            u8g2.setCursor(20, 32); u8g2.print("CAUGHT: "); u8g2.print(game.lastCaught);
+            u8g2.setCursor(20, 40); u8g2.print("+"); u8g2.print(FISH_VALS[game.targetFishIdx]); u8g2.print(" BITS");
+            u8g2.setCursor(20, 53); u8g2.print("C: TO LAKE");
+            u8g2.setDrawColor(1);
+        }
+        else if (game.state == MENU_MAIN) {
+            u8g2.drawStr(40, 20, "-- MENU --");
+            const char* m[] = {"DATA-DEX", "GEAR SHOP", "RESUME"};
+            for(int i=0; i<3; i++) {
+                u8g2.setCursor(30, 35+(i*8));
+                u8g2.print(game.menuIdx==i?"> ":"  "); u8g2.print(m[i]);
+            }
+        }
+        else if (game.state == DEX) {
+            u8g2.drawStr(5, 18, "DATA-DEX:");
+            for(int i=0; i<6; i++) {
+                u8g2.setCursor(10, 26+(i*6));
+                u8g2.print(FISH_NAMES[i]); u8g2.print(": "); u8g2.print(save.fishCounts[i]);
+            }
+        }
+        else if (game.state == SHOP) {
+            u8g2.drawStr(5, 18, "SHOP (B TO BUY):");
+            const char* items[] = {"ROD L", "REEL L", "LURE L"};
+            int lvls[] = {save.rodLvl, save.reelLvl, save.lureLvl};
+            for(int i=0; i<3; i++) {
+                u8g2.setCursor(10, 30+(i*10));
+                u8g2.print(game.menuIdx==i?"> ":"  "); u8g2.print(items[i]); u8g2.print(lvls[i]);
+                u8g2.print(" ["); u8g2.print((lvls[i]+1)*100); u8g2.print("b]");
+            }
+            u8g2.setCursor(10, 62); u8g2.print("BITS: "); u8g2.print(save.bits);
+        }
+
+    } while (u8g2.nextPage());
+}

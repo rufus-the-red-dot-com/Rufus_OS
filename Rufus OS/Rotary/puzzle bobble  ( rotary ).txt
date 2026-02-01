@@ -1,0 +1,211 @@
+#include <Arduino.h>
+#include <U8g2lib.h>
+#include <Wire.h>
+
+U8G2_SH1106_128X64_NONAME_1_HW_I2C u8g2(U8G2_R3, /* reset=*/ U8X8_PIN_NONE);
+
+// --- PIN DEFINITIONS ---
+#define ENC_TRA  2  
+#define ENC_TRB  3  
+#define BTN_SWAP 4  
+#define BTN_FIRE 8  
+#define BTN_MENU 7  
+#define BZ_SFX   5  
+
+// --- CONSTANTS ---
+#define GRID_W      8
+#define GRID_H      10
+#define BUBBLE_RAD  4
+#define OFFSET_Y    15
+
+struct Node { uint8_t type; bool active; };
+struct Projectile { float x, y, vx, vy; uint8_t type; bool active; };
+
+// --- GLOBALS ---
+enum State { TITLE, PLAYING, TERMINAL, LEVEL_CLEAR, GAMEOVER };
+State gameState = TITLE;
+
+Node grid[GRID_H][GRID_W];
+Projectile currentP;
+float aimAngle = 0; 
+uint8_t loadedType = 1, nextType = 2;
+long nuyen = 0;
+int sector = 1;
+int menuIdx = 0;
+unsigned long stateTimer = 0;
+
+// RPG Upgrades
+bool laserSight = false;
+int powerLevel = 1;
+
+volatile int dialDelta = 0;
+static int lastTRA = HIGH;
+
+void readEncoder() {
+  int tra = digitalRead(ENC_TRA);
+  if (tra != lastTRA && tra == LOW) {
+    if (digitalRead(ENC_TRB) != tra) dialDelta += 1; 
+    else dialDelta -= 1;
+  }
+  lastTRA = tra;
+}
+
+void playSound(int type) {
+  if (type == 0) tone(BZ_SFX, 1000, 30);  // Shoot
+  if (type == 1) tone(BZ_SFX, 1500, 50);  // Match
+  if (type == 2) tone(BZ_SFX, 200, 10);   // Wall
+  if (type == 3) tone(BZ_SFX, 600, 80);   // Drop
+}
+
+// --- CORE LOGIC [cite: 17-30] ---
+int countMatches(int x, int y, uint8_t type, bool visited[GRID_H][GRID_W]) {
+  if (x < 0 || x >= GRID_W || y < 0 || y >= GRID_H) return 0;
+  if (visited[y][x] || grid[y][x].type != type || !grid[y][x].active) return 0;
+  visited[y][x] = true;
+  int count = 1 + countMatches(x+1, y, type, visited) + countMatches(x-1, y, type, visited) +
+               countMatches(x, y+1, type, visited) + countMatches(x, y-1, type, visited);
+  return count;
+}
+
+void removeMatches(int x, int y, uint8_t type) {
+  if (x < 0 || x >= GRID_W || y < 0 || y >= GRID_H) return;
+  if (!grid[y][x].active || grid[y][x].type != type) return;
+  grid[y][x].active = false; grid[y][x].type = 0;
+  removeMatches(x+1, y, type); removeMatches(x-1, y, type);
+  removeMatches(x, y+1, type); removeMatches(x, y-1, type);
+}
+
+void findConnected(int x, int y, bool connected[GRID_H][GRID_W]) {
+  if (x < 0 || x >= GRID_W || y < 0 || y >= GRID_H) return;
+  if (connected[y][x] || !grid[y][x].active) return;
+  connected[y][x] = true;
+  findConnected(x+1, y, connected); findConnected(x-1, y, connected);
+  findConnected(x, y+1, connected); findConnected(x, y-1, connected);
+}
+
+void dropUnsupported() {
+  bool connected[GRID_H][GRID_W];
+  for(int i=0; i<GRID_H; i++) for(int j=0; j<GRID_W; j++) connected[i][j] = false;
+  for (int x = 0; x < GRID_W; x++) if (grid[0][x].active) findConnected(x, 0, connected);
+  for (int y = 0; y < GRID_H; y++) {
+    for (int x = 0; x < GRID_W; x++) {
+      if (grid[y][x].active && !connected[y][x]) {
+        grid[y][x].active = false; grid[y][x].type = 0; nuyen += (75 * powerLevel);
+      }
+    }
+  }
+}
+
+// --- COLLISION [cite: 31-34, 50-51] ---
+void stickProjectile() {
+  int gx = (int)(currentP.x) / (BUBBLE_RAD * 2);
+  int gy = (int)(currentP.y - OFFSET_Y) / (BUBBLE_RAD * 2);
+  gx = constrain(gx, 0, GRID_W - 1); gy = constrain(gy, 0, GRID_H - 1);
+  if (grid[gy][gx].active) {
+      if (gy < GRID_H - 1 && !grid[gy+1][gx].active) gy++;
+      else if (gx < GRID_W - 1 && !grid[gy][gx+1].active) gx++;
+      else if (gx > 0 && !grid[gy][gx-1].active) gx--;
+  }
+  grid[gy][gx].active = true; grid[gy][gx].type = currentP.type;
+  currentP.active = false;
+  bool v[GRID_H][GRID_W] = {false};
+  if (countMatches(gx, gy, currentP.type, v) >= 3) {
+    removeMatches(gx, gy, currentP.type); nuyen += (50 * powerLevel); playSound(1); dropUnsupported();
+  }
+  loadedType = nextType; nextType = random(1, 5);
+  if (gy >= GRID_H - 1) gameState = GAMEOVER;
+}
+
+void resetGrid() {
+  for(int y=0; y<GRID_H; y++) for(int x=0; x<GRID_W; x++) grid[y][x] = {0, false};
+  int rows = min(sector + 2, 6); // [cite: 11]
+  for (int y = 0; y < rows; y++) {
+    for (int x = 0; x < GRID_W; x++) if (random(0, 10) < 8) grid[y][x] = {(uint8_t)random(1, 5), true};
+  }
+  loadedType = random(1, 5); nextType = random(1, 5);
+}
+
+void setup() {
+  pinMode(ENC_TRA, INPUT_PULLUP); pinMode(ENC_TRB, INPUT_PULLUP);
+  pinMode(BTN_SWAP, INPUT_PULLUP); pinMode(BTN_FIRE, INPUT_PULLUP); pinMode(BTN_MENU, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(ENC_TRA), readEncoder, CHANGE);
+  u8g2.begin();
+  randomSeed(analogRead(A7));
+  resetGrid();
+}
+
+void update() {
+  if (gameState == TERMINAL) {
+    menuIdx = constrain(menuIdx + dialDelta, 0, 2); dialDelta = 0;
+    if (digitalRead(BTN_SWAP) == LOW) {
+      if (menuIdx == 0 && nuyen >= 1000) { laserSight = true; nuyen -= 1000; }
+      if (menuIdx == 1 && nuyen >= 500) { powerLevel++; nuyen -= 500; }
+      if (menuIdx == 2) resetGrid(); // The deadlock fix is now an option
+      tone(BZ_SFX, 1000, 50); delay(200);
+    }
+    if (digitalRead(BTN_MENU) == LOW) { gameState = PLAYING; delay(250); }
+    return;
+  }
+
+  aimAngle = constrain(aimAngle + (dialDelta * 0.06), -1.2, 1.2); dialDelta = 0;
+  if (digitalRead(BTN_SWAP) == LOW) {
+    uint8_t t = loadedType; loadedType = nextType; nextType = t;
+    tone(BZ_SFX, 1200, 10); delay(200);
+  }
+  if (digitalRead(BTN_FIRE) == LOW && !currentP.active) {
+    currentP.active = true; currentP.x = 32; currentP.y = 115;
+    currentP.vx = sin(aimAngle) * 4.5; currentP.vy = -cos(aimAngle) * 4.5;
+    currentP.type = loadedType; playSound(0);
+  }
+  if (currentP.active) {
+    currentP.x += currentP.vx; currentP.y += currentP.vy;
+    if (currentP.x < 4 || currentP.x > 60) { currentP.vx *= -1; playSound(2); }
+    if (currentP.y < OFFSET_Y + 4) stickProjectile();
+    else {
+      for (int y = 0; y < GRID_H; y++) for (int x = 0; x < GRID_W; x++) {
+        if (grid[y][x].active) {
+          float dist = sqrt(sq(currentP.x-(x*8+4)) + sq(currentP.y-(y*8+OFFSET_Y+4)));
+          if (dist < 7.2) { stickProjectile(); return; }
+        }
+      }
+    }
+  }
+  if (digitalRead(BTN_MENU) == LOW) { gameState = TERMINAL; delay(250); }
+}
+
+void drawNode(int x, int y, int type) {
+  u8g2.drawCircle(x, y, 3);
+  if (type == 1) u8g2.drawDisc(x, y, 1);
+  else if (type == 2) u8g2.drawFrame(x-1, y-1, 3, 3);
+  else if (type == 3) u8g2.drawBox(x-1, y-1, 3, 3);
+  else if (type == 4) u8g2.drawVLine(x, y-1, 3);
+}
+
+void render() {
+  u8g2.firstPage();
+  do {
+    if (gameState == TITLE) {
+      u8g2.setFont(u8g2_font_6x12_tf); u8g2.drawStr(10, 50, "NODE BREAKER");
+      if (digitalRead(BTN_FIRE) == LOW) { gameState = PLAYING; resetGrid(); }
+    } else if (gameState == TERMINAL) {
+      u8g2.setFont(u8g2_font_5x7_tf); u8g2.drawStr(5, 20, "TERMINAL");
+      u8g2.setFont(u8g2_font_4x6_tf); u8g2.setCursor(5, 30); u8g2.print("NY:"); u8g2.print(nuyen);
+      const char* m[] = {"LASER SIGHT (1000)", "PAYOUT LVL (500)", "REBOOT GRID"};
+      for(int i=0; i<3; i++) {
+        u8g2.setCursor(5, 50+(i*12)); if(i==menuIdx) u8g2.print("> "); u8g2.print(m[i]);
+      }
+    } else if (gameState == PLAYING) {
+      u8g2.drawHLine(0, 12, 64);
+      for (int y=0; y<GRID_H; y++) for(int x=0; x<GRID_W; x++) {
+        if(grid[y][x].active) drawNode(x*8+4, y*8+OFFSET_Y+4, grid[y][x].type);
+      }
+      if (laserSight) u8g2.drawLine(32, 115, 32 + sin(aimAngle)*40, 115 - cos(aimAngle)*40);
+      u8g2.drawLine(32, 115, 32 + sin(aimAngle)*12, 115 - cos(aimAngle)*12);
+      drawNode(32, 120, loadedType);
+      u8g2.drawStr(42, 115, "NX:"); drawNode(58, 113, nextType);
+      if (currentP.active) drawNode(currentP.x, currentP.y, currentP.type);
+    }
+  } while (u8g2.nextPage());
+}
+
+void loop() { update(); render(); }

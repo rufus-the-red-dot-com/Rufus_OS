@@ -1,0 +1,82 @@
+#include <Arduino.h>
+#include <U8g2lib.h>
+#include <SoftwareSerial.h>
+
+// SSD1306 128x32 Narrow OLED Driver
+U8G2_SSD1306_128X32_UNIVISION_1_HW_I2C u8g2(U8G2_R0);
+SoftwareSerial mp3(9, 10); // RX=9, TX=10
+
+// --- USER CONFIGURATION ---
+int totalTracks = 15;  // SET THIS TO THE TOTAL SONGS ON YOUR CARD
+int currentTrack = 1;
+bool isPaused = false;
+const int MAX_VOL = 30; // Absolute maximum for this hardware
+// ---------------------------
+
+void sendCmd(byte cmd, byte d1, byte d2) {
+  byte buf[8] = {0x7E, 0xFF, 0x06, cmd, 0x00, d1, d2, 0xEF};
+  for (int i = 0; i < 8; i++) mp3.write(buf[i]);
+}
+
+void setup() {
+  u8g2.begin();
+  mp3.begin(9600);
+  
+  pinMode(3, INPUT_PULLUP);  // Next
+  pinMode(6, INPUT_PULLUP);  // Prev
+  pinMode(11, INPUT_PULLUP); // Play/Pause
+
+  delay(1000);
+  sendCmd(0x0C, 0, 0);       // Reset Module
+  delay(1000);
+  
+  sendCmd(0x06, 0, MAX_VOL); // FORCE MAXIMUM VOLUME (30)
+  sendCmd(0x03, 0, 1);       // Play Track 1
+}
+
+void loop() {
+  // NEXT TRACK (Pin 3)
+  if (digitalRead(3) == LOW) {
+    currentTrack++;
+    if (currentTrack > totalTracks) currentTrack = 1; 
+    
+    sendCmd(0x03, 0, currentTrack); // Play specific index
+    isPaused = false;
+    delay(400); 
+  }
+
+  // PREVIOUS TRACK (Pin 6)
+  if (digitalRead(6) == LOW) {
+    currentTrack--;
+    if (currentTrack < 1) currentTrack = totalTracks; 
+    
+    sendCmd(0x03, 0, currentTrack);
+    isPaused = false;
+    delay(400);
+  }
+
+  // PLAY / PAUSE (Pin 11)
+  if (digitalRead(11) == LOW) {
+    isPaused = !isPaused;
+    sendCmd(isPaused ? 0x0E : 0x0D, 0, 0); // 0x0E=Pause, 0x0D=Resume
+    delay(500); 
+  }
+
+  // REFRESH SCREEN
+  u8g2.firstPage();
+  do {
+    u8g2.setFont(u8g2_font_5x7_tr);
+    u8g2.drawStr(0, 8, isPaused ? "|| PAUSED" : "> PLAYING");
+    u8g2.setCursor(90, 8); u8g2.print("VOL: 30"); // Confirmation of max volume
+    
+    u8g2.setFont(u8g2_font_7x14_tr);
+    u8g2.setCursor(0, 26);
+    u8g2.print("TRACK: ");
+    u8g2.print(currentTrack); 
+
+    // Visual Progress Bar
+    u8g2.drawFrame(0, 28, 128, 4);
+    int barWidth = map(currentTrack, 1, totalTracks, 0, 128);
+    u8g2.drawBox(0, 28, barWidth, 4);
+  } while (u8g2.nextPage());
+}

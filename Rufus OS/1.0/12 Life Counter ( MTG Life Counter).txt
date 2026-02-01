@@ -1,0 +1,256 @@
+#include <Arduino.h>
+#include <U8g2lib.h>
+#include <Wire.h>
+
+// SH1106 128x64 I2C
+U8G2_SH1106_128X64_NONAME_1_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+
+// --- PIN DEFINITIONS ---
+#define STICK_X    A0
+#define STICK_Y    A1
+#define BTN_MENU   2  // Click Stick to open/close menu
+#define BTN_SUB    11 // Decrease / Edit Char 1
+#define BTN_ADD    9  // Increase / Edit Char 2
+#define BTN_BULK   5  // Hold for +/- 5
+#define BTN_RESET  10 // Hold to Reset All
+#define BZ_SFX     3  
+
+// --- CONSTANTS ---
+#define DEFAULT_LIFE 40
+#define MODE_LIFE    0
+#define MODE_POISON  1
+#define MODE_CMD     2
+#define MODE_VAL1    3
+#define MODE_VAL2    4
+#define MODE_NAME    5
+#define MODE_LBL1    6
+#define MODE_LBL2    7
+
+const char* modeLabels[] = {"LIFE", "POISON", "CMD DMG", "TRK 1", "TRK 2", "NAME", "LABEL 1", "LABEL 2"};
+
+// --- DATA STRUCTURES ---
+struct Player {
+  int stats[5]; // Life, Poison, Cmd, Val1, Val2
+  char name[3]; // 2 Characters + Null
+};
+
+enum UIState { VIEWING, MENU };
+
+// --- GLOBAL STATE ---
+Player players[4];
+UIState uiState = VIEWING;
+int activePlayer = 0;
+int editMode = MODE_LIFE;
+unsigned long lastAction = 0;
+bool bulkMode = false;
+char customLables[2][3] = {"T1", "T2"}; // 2 Characters + Null
+
+// --- AUDIO ---
+void playBeep(int freq, int dur) {
+  tone(BZ_SFX, freq, dur);
+}
+
+// Helper for naming
+char scrollChar(char c, int dir) {
+  const char* set = " ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+  int len = strlen(set);
+  int currentIdx = 0;
+  for (int i = 0; i < len; i++) {
+    if (set[i] == c) {
+      currentIdx = i;
+      break;
+    }
+  }
+  int nextIdx = (currentIdx + dir + len) % len;
+  return set[nextIdx];
+}
+
+// --- LOGIC ---
+void resetAll() {
+  for (int i = 0; i < 4; i++) {
+    players[i].stats[0] = DEFAULT_LIFE;
+    for (int s = 1; s < 5; s++) players[i].stats[s] = 0;
+    players[i].name[0] = 'P';
+    players[i].name[1] = '1' + i;
+    players[i].name[2] = '\0';
+  }
+  strcpy(customLables[0], "T1");
+  strcpy(customLables[1], "T2");
+  playBeep(880, 300);
+}
+
+void handleInput() {
+  int jX = analogRead(STICK_X);
+  int jY = analogRead(STICK_Y);
+  bulkMode = (digitalRead(BTN_BULK) == LOW);
+
+  if (uiState == VIEWING) {
+    // Navigate between players
+    if (millis() - lastAction > 200) {
+      if (jX < 300) { if (activePlayer % 2 == 1) activePlayer--; lastAction = millis(); }
+      else if (jX > 700) { if (activePlayer % 2 == 0) activePlayer++; lastAction = millis(); }
+      else if (jY < 300) { if (activePlayer > 1) activePlayer -= 2; lastAction = millis(); }
+      else if (jY > 700) { if (activePlayer < 2) activePlayer += 2; lastAction = millis(); }
+    }
+
+    // Direct Life Adjustment
+    static bool subD = false, addD = false;
+    int delta = bulkMode ? 5 : 1;
+    if (digitalRead(BTN_SUB) == LOW) {
+      if (!subD) { players[activePlayer].stats[MODE_LIFE] -= delta; playBeep(400, 20); subD = true; }
+    } else subD = false;
+    if (digitalRead(BTN_ADD) == LOW) {
+      if (!addD) { players[activePlayer].stats[MODE_LIFE] += delta; playBeep(600, 20); addD = true; }
+    } else addD = false;
+
+    // Enter Menu
+    if (digitalRead(BTN_MENU) == LOW) { uiState = MENU; editMode = MODE_POISON; playBeep(1000, 50); delay(250); }
+  } 
+  else { // MENU STATE
+    // Select which stat to edit
+    if (millis() - lastAction > 200) {
+      if (jY < 300) { editMode = (editMode == 0) ? 7 : editMode - 1; lastAction = millis(); }
+      else if (jY > 700) { editMode = (editMode + 1) % 8; lastAction = millis(); }
+    }
+
+    // Adjust selected stat
+    static bool subD = false, addD = false;
+    int delta = bulkMode ? 5 : 1;
+    
+    // Naming Modes: One button per character
+    if (editMode == MODE_NAME || editMode == MODE_LBL1 || editMode == MODE_LBL2) {
+      if (digitalRead(BTN_SUB) == LOW) {
+        if (!subD) {
+          if (editMode == MODE_NAME) players[activePlayer].name[0] = scrollChar(players[activePlayer].name[0], 1);
+          else customLables[editMode - MODE_LBL1][0] = scrollChar(customLables[editMode - MODE_LBL1][0], 1);
+          playBeep(400, 20); subD = true;
+        }
+      } else subD = false;
+
+      if (digitalRead(BTN_ADD) == LOW) {
+        if (!addD) {
+          if (editMode == MODE_NAME) players[activePlayer].name[1] = scrollChar(players[activePlayer].name[1], 1);
+          else customLables[editMode - MODE_LBL1][1] = scrollChar(customLables[editMode - MODE_LBL1][1], 1);
+          playBeep(600, 20); addD = true;
+        }
+      } else addD = false;
+    } 
+    // Value Modes: Standard subtract/add
+    else {
+      if (digitalRead(BTN_SUB) == LOW) {
+        if (!subD) { players[activePlayer].stats[editMode] -= delta; playBeep(400, 20); subD = true; }
+      } else subD = false;
+
+      if (digitalRead(BTN_ADD) == LOW) {
+        if (!addD) { players[activePlayer].stats[editMode] += delta; playBeep(600, 20); addD = true; }
+      } else addD = false;
+    }
+
+    // Exit Menu
+    if (digitalRead(BTN_MENU) == LOW && millis() - lastAction > 400) { 
+      uiState = VIEWING; 
+      playBeep(800, 50); 
+      delay(250); 
+    }
+  }
+
+  // Global Reset
+  if (digitalRead(BTN_RESET) == LOW) {
+    static unsigned long resetTimer = 0;
+    if (resetTimer == 0) resetTimer = millis();
+    if (millis() - resetTimer > 2000) { resetAll(); resetTimer = 0; delay(500); }
+  }
+}
+
+void drawPlayerZone(int id) {
+  int xB = (id % 2) * 64;
+  int yB = (id / 2) * 32;
+
+  u8g2.setDrawColor(1);
+  if (activePlayer == id && uiState == VIEWING) {
+    u8g2.drawBox(xB, yB, 64, 32);
+    u8g2.setDrawColor(0);
+  } else {
+    u8g2.drawFrame(xB, yB, 64, 32);
+  }
+
+  if (id < 2) { // TOP PLAYERS (180 Deg Flipped)
+    u8g2.setFontDirection(2); 
+    u8g2.setFont(u8g2_font_logisoso16_tn);
+    u8g2.setCursor(xB + 48, yB + 4); 
+    u8g2.print(players[id].stats[0]);
+    
+    u8g2.setFont(u8g2_font_4x6_tf);
+    u8g2.setCursor(xB + 62, yB + 24); u8g2.print(players[id].name);
+    
+    u8g2.setCursor(xB + 12, yB + 24); u8g2.print("P"); u8g2.print(players[id].stats[1]);
+    u8g2.setCursor(xB + 12, yB + 16); u8g2.print("C"); u8g2.print(players[id].stats[2]);
+    u8g2.setCursor(xB + 12, yB + 8); u8g2.print(customLables[0][0]); u8g2.print(players[id].stats[3]);
+    u8g2.setCursor(xB + 12, yB + 0); u8g2.print(customLables[1][0]); u8g2.print(players[id].stats[4]);
+  } 
+  else { // BOTTOM PLAYERS
+    u8g2.setFontDirection(0);
+    u8g2.setFont(u8g2_font_logisoso16_tn);
+    u8g2.setCursor(xB + 16, yB + 28);
+    u8g2.print(players[id].stats[0]);
+    
+    u8g2.setFont(u8g2_font_4x6_tf);
+    u8g2.setCursor(xB + 2, yB + 8); u8g2.print(players[id].name);
+    
+    u8g2.setCursor(xB + 52, yB + 8); u8g2.print("P"); u8g2.print(players[id].stats[1]);
+    u8g2.setCursor(xB + 52, yB + 16); u8g2.print("C"); u8g2.print(players[id].stats[2]);
+    u8g2.setCursor(xB + 52, yB + 24); u8g2.print(customLables[0][0]); u8g2.print(players[id].stats[3]);
+    u8g2.setCursor(xB + 52, yB + 31); u8g2.print(customLables[1][0]); u8g2.print(players[id].stats[4]);
+  }
+}
+
+void render() {
+  u8g2.firstPage();
+  do {
+    if (uiState == VIEWING) {
+      for (int i = 0; i < 4; i++) drawPlayerZone(i);
+    } 
+    else { // MENU RENDER
+      u8g2.setFontDirection(0);
+      u8g2.setDrawColor(1);
+      u8g2.drawFrame(0, 0, 128, 64);
+      u8g2.setFont(u8g2_font_5x7_tf);
+      u8g2.setCursor(4, 10); u8g2.print("EDITING: "); u8g2.print(players[activePlayer].name);
+      u8g2.drawHLine(0, 13, 128);
+
+      for(int i=0; i<8; i++) {
+        int y = 24 + (i * 8);
+        if (y > 64) break;
+        if (editMode == i) u8g2.drawBox(2, y-6, 124, 8);
+        u8g2.setDrawColor(editMode == i ? 0 : 1);
+        u8g2.setCursor(4, y);
+        u8g2.print(modeLabels[i]);
+        u8g2.setCursor(80, y);
+        
+        if (i == MODE_NAME) { 
+           u8g2.print(players[activePlayer].name); 
+        }
+        else if (i >= MODE_LBL1) {
+           u8g2.print(customLables[i-MODE_LBL1]);
+        }
+        else { u8g2.print(players[activePlayer].stats[i]); }
+        u8g2.setDrawColor(1);
+      }
+    }
+  } while (u8g2.nextPage());
+}
+
+void setup() {
+  pinMode(BTN_MENU,  INPUT_PULLUP);
+  pinMode(BTN_SUB,   INPUT_PULLUP);
+  pinMode(BTN_ADD,   INPUT_PULLUP);
+  pinMode(BTN_BULK,  INPUT_PULLUP);
+  pinMode(BTN_RESET, INPUT_PULLUP);
+  u8g2.begin();
+  resetAll();
+}
+
+void loop() {
+  handleInput();
+  render();
+}
