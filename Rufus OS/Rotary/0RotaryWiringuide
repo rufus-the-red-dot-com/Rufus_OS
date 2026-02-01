@@ -1,0 +1,6 @@
+Component,Pin,Logic
+Encoder Pin A,A0,Interrupt/Digital
+Encoder Pin B,A1,Interrupt/Digital
+Encoder Button,D11,Push-to-Select
+Menu Button,D10,Back
+OLED SDA / SCL,A4 / A5,I2C
