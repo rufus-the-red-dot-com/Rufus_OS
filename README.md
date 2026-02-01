@@ -5,12 +5,12 @@ This repository contains the complete Firmware Library and logic for the Rufus l
 
 ## 📱 The Device Roster
 
-1. **/Rufus_1.0**: The baseline stable build. Full app-shell and OS kernel.
+1. **/Rufus_1.0**: The baseline stable build. Firmware Library.
 2. **/Rufus_RTC**: Time-persistent build featuring Real-Time Clock integration.
 3. **/Origin_Tetris**: 4-button tactical layout for falling-block logic.
 4. **/Origin_Pool_Breakout**: 3-button physics-based "Origin" device.
 5. **/Rufus_Rotary**: Precision input build using an incremental rotary encoder.
-6. **/Rufus_Tiny**: Ultra-compact firmware optimized for minimal footprint/ATtiny.
+6. **/Rufus_Tiny**: Ultra-compact firmware optimized for minimal footprint.
 7. **/Rufus_TwinStick**: Dual analog input configuration for 360-degree combat.
 8. **/Rufus_MP3**: Multimedia build with DFPlayer/serial audio integration.
 
