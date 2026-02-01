@@ -35,3 +35,4 @@ Cross-compatibility is maintained through a unified hardware abstraction layer.
 2. Ensure your OLED is at I2C address `0x3C`.
 3. For the **TwinStick**, secondary axes map to **A6/A7**.
 4. For the **MP3 Player**, Serial RX/TX is handled on **D2/D4**.
+5. Some devices may require other libraries ( such as the rotary requiring Encoder by paul stroffegen ) 
