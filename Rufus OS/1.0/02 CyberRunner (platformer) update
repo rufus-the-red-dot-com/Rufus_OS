@@ -1,0 +1,156 @@
+#include <Arduino.h>
+#include <U8g2lib.h>
+#include <Wire.h>
+
+// --- RUFUS 1.0 HARDWARE DEFINITION ---
+U8G2_SH1106_128X64_NONAME_1_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+
+#define BZ_MEL     3   
+#define PIN_JUMP   10 // TOP
+#define PIN_SHOP   5  // BOTTOM
+#define PIN_DASH   9  // RIGHT
+#define PIN_FIRE   11 // LEFT
+#define STICK_X    A0 
+
+// --- GAME ENGINE ---
+enum GameState { TITLE, PLAYING, SHOP, DEAD };
+GameState state = TITLE;
+
+#define FPS 30
+unsigned long lastFrame = 0;
+long worldX = 0; 
+int shake = 0;
+
+struct Player {
+  float x, y, vy; 
+  int hp, xp;
+  int str, agi, tec;
+  float energy;
+  bool jumping;
+};
+
+Player p = {30, 46, 0, 100, 0, 1, 1, 1, 100.0, false};
+
+struct Entity { 
+  long wx;    
+  bool active; 
+  int dir;    
+  float speed; 
+};
+
+Entity bot = {0, false, -1, 1.6};
+Entity pit = {0, false, 0, 0};
+
+// --- CORE FUNCTIONS ---
+void resetSession() {
+  p.hp = 100; p.energy = 100; p.y = 46; p.vy = 0;
+  worldX = 0; bot.active = false; pit.active = false; shake = 0;
+}
+
+void updateGame() {
+  if (state == TITLE) {
+    if (digitalRead(PIN_FIRE) == LOW) { state = PLAYING; resetSession(); p.xp = 0; }
+    return;
+  }
+  if (state == DEAD) {
+    if (digitalRead(PIN_FIRE) == LOW) { state = TITLE; delay(300); }
+    return;
+  }
+
+  // --- SHOP (HARD PAUSE) ---
+  static bool lastShop = HIGH;
+  bool curShop = digitalRead(PIN_SHOP);
+  if (curShop == LOW && lastShop == HIGH) {
+    state = (state == PLAYING) ? SHOP : PLAYING;
+    tone(BZ_MEL, 800, 30); delay(150);
+  }
+  lastShop = curShop;
+
+  if (state == SHOP) {
+    if (p.xp >= 100) {
+      if (digitalRead(PIN_JUMP) == LOW) { p.str++; p.xp -= 100; tone(BZ_MEL, 1000, 30); delay(150); }
+      if (digitalRead(PIN_DASH) == LOW) { p.agi++; p.xp -= 100; tone(BZ_MEL, 1200, 30); delay(150); }
+      if (digitalRead(PIN_FIRE) == LOW) { p.tec++; p.xp -= 100; tone(BZ_MEL, 1400, 30); delay(150); }
+    }
+    return; 
+  }
+
+  // --- MOVEMENT ---
+  int sX = analogRead(STICK_X);
+  float moveSpeed = (digitalRead(PIN_DASH) == LOW && p.energy > 5) ? (2.8 + p.agi * 0.4) : 2.0;
+  
+  if (sX > 600) { worldX += moveSpeed; if(digitalRead(PIN_DASH) == LOW) p.energy -= 0.8; } 
+  else if (sX < 400 && worldX > 0) { worldX -= (moveSpeed * 0.7); }
+
+  p.energy = min(100.0, p.energy + (0.12 + p.tec * 0.08));
+  if (shake > 0) shake--;
+
+  // --- PHYSICS & PIT HITBOX (FIXED) ---
+  if (digitalRead(PIN_JUMP) == LOW && !p.jumping) { p.vy = -7.0; p.jumping = true; tone(BZ_MEL, 150, 20); }
+  p.y += p.vy;
+  if (p.y < 46) p.vy += 0.85;
+  else {
+    p.y = 46; p.vy = 0; p.jumping = false;
+    // PIT FIX: Precise center-of-gravity check
+    if (pit.active) {
+      long relativePitX = pit.wx - worldX;
+      // Player center is at p.x + 3. Pit is 30px wide. 
+      // You only fall if your feet are fully inside the gap.
+      if ((p.x + 3 > relativePitX + 2) && (p.x + 3 < relativePitX + 28)) {
+        state = DEAD; tone(BZ_MEL, 40, 500);
+      }
+    }
+  }
+
+  // --- ENEMY LOGIC ---
+  if (!bot.active && random(0, 100) < 4) {
+    bot.dir = (random(0, 2) == 0) ? 1 : -1;
+    bot.wx = (bot.dir == 1) ? worldX - 60 : worldX + 140;
+    bot.speed = 1.6 + (random(0, 15) * 0.1);
+    bot.active = true;
+  }
+  if (bot.active) {
+    bot.wx += (bot.dir * bot.speed);
+    long screenBotX = bot.wx - worldX;
+    if (screenBotX < -100 || screenBotX > 240) bot.active = false;
+    if (abs(screenBotX - p.x) < 8 && abs(p.y - 46) < 6) {
+      p.hp -= 25; bot.active = false; shake = 10; tone(BZ_MEL, 60, 150);
+      if (p.hp <= 0) state = DEAD;
+    }
+  }
+
+  // --- PIT SPAWNING ---
+  if (!pit.active && random(0, 100) < 2) { pit.wx = worldX + 180; pit.active = true; }
+  if (pit.active && (pit.wx - worldX) < -60) pit.active = false;
+}
+
+void setup() { u8g2.begin(); pinMode(PIN_JUMP, INPUT_PULLUP); pinMode(PIN_SHOP, INPUT_PULLUP); pinMode(PIN_DASH, INPUT_PULLUP); pinMode(PIN_FIRE, INPUT_PULLUP); }
+
+void loop() {
+  if (millis() - lastFrame < (1000/FPS)) return;
+  lastFrame = millis();
+  updateGame();
+  u8g2.firstPage();
+  do {
+    int ox = (shake > 0) ? random(-2, 3) : 0; int oy = (shake > 0) ? random(-2, 3) : 0;
+    if (state == TITLE) { u8g2.setFont(u8g2_font_9x15_tf); u8g2.drawStr(22, 30, "RUFUS-KNIGHT"); u8g2.setFont(u8g2_font_4x6_tf); u8g2.drawStr(38, 45, "FIRE TO BOOT"); } 
+    else if (state == DEAD) { u8g2.setFont(u8g2_font_6x12_tf); u8g2.drawStr(40, 35, "HALTED."); } 
+    else {
+      // Stars
+      for(int i=0; i<8; i++) { int sx = (i * 45 - (int)(worldX / 10)) % 128; if (sx < 0) sx += 128; u8g2.drawPixel(sx + ox, (i * 17) % 64 + oy); }
+      // World
+      u8g2.drawHLine(0 + ox, 63 + oy, 128);
+      if (pit.active) { int px = pit.wx - worldX; if (px > -40 && px < 130) { u8g2.setDrawColor(0); u8g2.drawBox(px + ox, 63 + oy, 30, 1); u8g2.setDrawColor(1); u8g2.drawVLine(px + ox, 61 + oy, 3); u8g2.drawVLine(px + 30 + ox, 61 + oy, 3); } }
+      // Player
+      u8g2.drawBox(p.x+2 + ox, p.y + oy, 4, 4); u8g2.drawFrame(p.x+1 + ox, p.y+4 + oy, 6, 8); u8g2.drawVLine(p.x+2 + ox, p.y+12 + oy, 4); u8g2.drawVLine(p.x+5 + ox, p.y+12 + oy, 4);
+      // Bots & Markers
+      if (bot.active) { int sbx = bot.wx - worldX; if (sbx < 0) u8g2.drawTriangle(4, 55, 4, 61, 0, 58); else if (sbx > 128) u8g2.drawTriangle(123, 55, 123, 61, 128, 58); if (sbx > -10 && sbx < 138) u8g2.drawFrame(sbx + ox, 54 + oy, 6, 8); }
+      // Combat
+      if (digitalRead(PIN_FIRE) == LOW && state == PLAYING) { int dir = (analogRead(STICK_X) > 512) ? 1 : -1; int bx = (dir == 1 ? p.x + 8 : p.x - 15); u8g2.drawHLine(bx + ox, p.y+7 + oy, 15); if (bot.active && abs((bot.wx - worldX) - (p.x + (dir * 30))) < 35) { bot.active = false; p.xp += 50; tone(BZ_MEL, 1800, 10); } }
+      // Shop Overlay
+      if (state == SHOP) { u8g2.setDrawColor(0); u8g2.drawBox(34, 10, 60, 42); u8g2.setDrawColor(1); u8g2.drawFrame(34, 10, 60, 42); u8g2.setFont(u8g2_font_4x6_tf); u8g2.setCursor(38, 20); u8g2.print("XP:"); u8g2.print(p.xp); u8g2.setCursor(38, 30); u8g2.print("UP:STR"); u8g2.setCursor(38, 38); u8g2.print("RT:AGI"); u8g2.setCursor(38, 46); u8g2.print("LF:TEC"); }
+      // HUD
+      u8g2.setFont(u8g2_font_4x6_tf); u8g2.setCursor(2, 7); u8g2.print("HP:"); u8g2.print(p.hp); u8g2.drawBox(95, 2, p.energy * 0.3, 3); u8g2.drawFrame(95, 2, 30, 3);
+    }
+  } while ( u8g2.nextPage() );
+}
