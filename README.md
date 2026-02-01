@@ -1,7 +1,7 @@
 # 🏛️ The Rufus Hardware Archive
 **Master Source for the Rufus Standard Handheld Ecosystem.**
 
-This repository contains the complete firmware and logic for the Rufus line of custom handhelds. These projects track the evolution from 3-button "Origin" devices to dual-stick and rotary-encoded systems.
+This repository contains the complete Firmware Library and logic for the Rufus line of custom handhelds. These projects track the evolution from 3-button "Origin" devices to dual-stick and rotary-encoded systems.
 
 ## 📱 The Device Roster
 
