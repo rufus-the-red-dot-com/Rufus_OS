@@ -1,0 +1,5 @@
+Component,Pin,Function
+Button 1 (Left),D10,Aim Left / Menu
+Button 2 (Action),D11,Shoot / Confirm
+Button 3 (Right),D12,Aim Right
+OLED SDA / SCL,A4 / A5,I2C
