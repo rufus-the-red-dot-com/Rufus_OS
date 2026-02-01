@@ -1,0 +1,6 @@
+Component,Pin,Logic
+OLED SDA / SCL,A4 / A5,I2C Bus
+Joystick X / Y,A0 / A1,Analog (0-1023)
+Action Button,D11,INPUT_PULLUP
+Menu Button,D10,INPUT_PULLUP
+Buzzer High / Low,D3 / D6,PWM Audio
