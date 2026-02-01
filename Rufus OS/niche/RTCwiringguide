@@ -1,0 +1,5 @@
+Component,Pin,Logic
+OLED + RTC SDA,A4,Shared I2C Data
+OLED + RTC SCL,A5,Shared I2C Clock
+Joystick X / Y,A0 / A1,Analog
+Action / Menu,D11 / D10,Digital
