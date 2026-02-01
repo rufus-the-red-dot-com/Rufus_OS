@@ -1,0 +1,5 @@
+Component,Pin (ATtiny85),Function
+OLED SDA / SCL,PB0 / PB2,I2C
+Action Button,PB1,Digital
+Menu Button,PB3,Digital
+Buzzer,PB4,Single PWM
