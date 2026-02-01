@@ -1,0 +1,6 @@
+Component,Pin,Function
+Button 1 (Action),D11,Rotate / Confirm
+Button 2 (Menu),D10,Back / Exit
+Button 3 (Down),D12,Soft Drop
+Button 4 (Up),D9,Hard Drop / Move
+OLED SDA / SCL,A4 / A5,I2C
