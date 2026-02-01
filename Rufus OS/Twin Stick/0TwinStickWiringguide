@@ -1,0 +1,5 @@
+Component,Pin,Function
+Stick 1 X / Y,A0 / A1,Movement
+Stick 2 X / Y,A6 / A7,Aiming / Firing
+Action / Menu,D11 / D10,Triggers
+OLED SDA / SCL,A4 / A5,I2C
