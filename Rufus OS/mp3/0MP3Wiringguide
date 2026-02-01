@@ -1,0 +1,6 @@
+Component,Pin,Logic
+MP3 RX,D4,Arduino TX (thru 1k resistor)
+MP3 TX,D2,Arduino RX
+Joystick X / Y,A0 / A1,Track Select / Volume
+Play/Pause,D11,Action
+OLED SDA / SCL,A4 / A5,I2C
