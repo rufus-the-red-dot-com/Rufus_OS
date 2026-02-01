@@ -27,6 +27,7 @@ Cross-compatibility is maintained through a unified hardware abstraction layer.
 | **Menu / Back** | D10 | Secondary (Active Low) |
 | **Buzzer High** | D3 | PWM (UI / Treble) |
 | **Buzzer Low** | D6 | PWM (SFX / Bass) |
+(make sure to double check wiring in code) 
 
 
 
